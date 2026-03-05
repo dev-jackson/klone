@@ -1,0 +1,41 @@
+# Build output
+build/
+**/build/
+out/
+
+# Gradle caches (local machine only)
+.gradle/
+**/.gradle/
+
+# Kotlin incremental compilation cache
+.kotlin/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+
+# Android local config
+local.properties
+
+# Credentials / secrets — NEVER commit these
+*.key
+*.jks
+*.keystore
+*.p12
+*.pfx
+secrets.properties
+*.env
+.env*
+
+# Claude Code / claude-flow internal (not relevant to plugin users)
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+CLAUDE.md
+
+# Sample app build artifacts
+sample/**/build/

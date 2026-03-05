@@ -1,0 +1,15 @@
+[versions]
+agp = "8.7.3"
+kotlin = "2.0.21"
+compileSdk = "35"
+minSdk = "24"
+targetSdk = "35"
+
+[libraries]
+# These would be substituted by APM composite builds when the plugin is active
+retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version = "2.9.0" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version = "4.12.0" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

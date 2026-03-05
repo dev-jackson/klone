@@ -1,0 +1,18 @@
+[versions]
+kotlin = "2.0.21"
+kotlinx-serialization = "1.7.3"
+gradle-publish-plugin = "1.3.0"
+vanniktech-publish = "0.30.0"
+junit = "5.11.3"
+mockk = "1.13.13"
+
+[libraries]
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit" }
+mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+gradle-publish = { id = "com.gradle.plugin-publish", version.ref = "gradle-publish-plugin" }
+vanniktech-publish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktech-publish" }
