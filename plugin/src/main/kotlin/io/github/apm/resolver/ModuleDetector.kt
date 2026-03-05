@@ -96,6 +96,20 @@ object ModuleDetector {
                 setOf(RegexOption.DOT_MATCHES_ALL)
             ).find(content)
             if (blockMatch != null) return blockMatch.groupValues[1]
+
+            // MavenPublication groupId (Android publishing block)
+            val mavenGroupId = Regex(
+                """groupId\s*=\s*["']([^"']+)["']""",
+                RegexOption.MULTILINE
+            ).find(content)
+            if (mavenGroupId != null) return mavenGroupId.groupValues[1]
+
+            // android { namespace = "..." } — fallback for Android libs with no explicit group
+            val namespace = Regex(
+                """android\s*\{[^}]*?namespace\s*=\s*["']([^"']+)["']""",
+                setOf(RegexOption.DOT_MATCHES_ALL)
+            ).find(content)
+            if (namespace != null) return namespace.groupValues[1]
         }
         return null
     }

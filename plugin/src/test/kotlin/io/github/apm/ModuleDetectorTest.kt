@@ -172,6 +172,42 @@ class ModuleDetectorTest {
     }
 
     @Test
+    fun `detectGroup finds groupId in MavenPublication block`() {
+        File(tempDir, "build.gradle.kts").writeText("""
+            plugins { id("com.android.library") }
+            publishing {
+                publications {
+                    create<MavenPublication>("maven") {
+                        groupId = "com.bancoguayaquil"
+                        artifactId = "customerservice"
+                    }
+                }
+            }
+        """.trimIndent())
+        File(tempDir, "settings.gradle.kts").writeText("""rootProject.name = "customerservice"""")
+
+        val result = ModuleDetector.detect(tempDir, "customerservice")
+
+        assertEquals("com.bancoguayaquil:customerservice", result)
+    }
+
+    @Test
+    fun `detectGroup falls back to android namespace`() {
+        File(tempDir, "build.gradle.kts").writeText("""
+            plugins { id("com.android.library") }
+            android {
+                namespace = "com.bancoguayaquil.customerservice"
+                compileSdk = 34
+            }
+        """.trimIndent())
+        File(tempDir, "settings.gradle.kts").writeText("""rootProject.name = "customerservice"""")
+
+        val result = ModuleDetector.detect(tempDir, "customerservice")
+
+        assertEquals("com.bancoguayaquil.customerservice:customerservice", result)
+    }
+
+    @Test
     fun `detectAllSubmodules falls back to root group when submodule has no group`() {
         File(tempDir, "build.gradle.kts").writeText("""
             group = "com.fallback"
