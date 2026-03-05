@@ -14,9 +14,17 @@ data class GitDependency(
 
     val cacheKey: String
         get() {
-            val host = url.removePrefix("https://").removePrefix("http://").substringBefore('/')
-            val path = url.removePrefix("https://").removePrefix("http://").substringAfter('/')
-                .trimEnd('/').removeSuffix(".git")
+            // SSH: git@github.com:user/repo.git
+            if (url.startsWith("git@")) {
+                val host = url.removePrefix("git@").substringBefore(':')
+                val path = url.substringAfter(':').trimEnd('/').removeSuffix(".git")
+                return "$host/$path"
+            }
+            // HTTPS — strip scheme and embedded auth (user:token@host)
+            val noScheme = url.removePrefix("https://").removePrefix("http://")
+            val noAuth = if (noScheme.contains('@')) noScheme.substringAfter('@') else noScheme
+            val host = noAuth.substringBefore('/')
+            val path = noAuth.substringAfter('/').trimEnd('/').removeSuffix(".git")
             return "$host/$path"
         }
 }

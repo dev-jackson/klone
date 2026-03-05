@@ -42,10 +42,16 @@ object ModuleDetector {
             ?: return emptyList()
 
         val content = settingsFile.readText()
-        return Regex("""include\s*\(\s*["']([^"']+)["']\s*\)""")
-            .findAll(content)
-            .map { it.groupValues[1] }
-            .toList()
+        val results = mutableListOf<String>()
+
+        // Capture each include(...) / include ... line, then extract all ":path" tokens from it
+        Regex("""include\b[^\n;]*""").findAll(content).forEach { includeLine ->
+            Regex("""["'](:[^"'\s,)]+)["']""").findAll(includeLine.value).forEach { pathMatch ->
+                results.add(pathMatch.groupValues[1])
+            }
+        }
+
+        return results.distinct()
     }
 
     private fun projectPathToDir(repoDir: File, projectPath: String): File {
@@ -56,6 +62,14 @@ object ModuleDetector {
     }
 
     internal fun detectGroup(repoDir: File): String? {
+        // 1. gradle.properties — simple and explicit
+        val gradleProps = File(repoDir, "gradle.properties")
+        if (gradleProps.exists()) {
+            val match = Regex("""^\s*group\s*=\s*(\S+)""", RegexOption.MULTILINE)
+                .find(gradleProps.readText())
+            if (match != null) return match.groupValues[1].trim()
+        }
+
         val buildFiles = listOf(
             File(repoDir, "build.gradle.kts"),
             File(repoDir, "build.gradle"),
@@ -68,10 +82,20 @@ object ModuleDetector {
         for (file in buildFiles) {
             if (!file.exists()) continue
             val content = file.readText()
-            val ktsMatch = Regex("""group\s*=\s*"([^"]+)"""").find(content)
-            if (ktsMatch != null) return ktsMatch.groupValues[1]
-            val groovyMatch = Regex("""group\s*=?\s*'([^']+)'""").find(content)
-            if (groovyMatch != null) return groovyMatch.groupValues[1]
+
+            // Top-level: group = "..."
+            val ktsTop = Regex("""^group\s*=\s*"([^"]+)"""", RegexOption.MULTILINE).find(content)
+            if (ktsTop != null) return ktsTop.groupValues[1]
+
+            val groovyTop = Regex("""^group\s*=?\s*'([^']+)'""", RegexOption.MULTILINE).find(content)
+            if (groovyTop != null) return groovyTop.groupValues[1]
+
+            // Inside allprojects { } or subprojects { }
+            val blockMatch = Regex(
+                """(?:allprojects|subprojects)\s*\{[^}]*?group\s*=\s*["']([^"']+)["']""",
+                setOf(RegexOption.DOT_MATCHES_ALL)
+            ).find(content)
+            if (blockMatch != null) return blockMatch.groupValues[1]
         }
         return null
     }

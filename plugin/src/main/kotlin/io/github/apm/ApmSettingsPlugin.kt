@@ -46,7 +46,18 @@ class KloneSettingsPlugin : Plugin<Settings> {
                     throw e
                 }
 
+                logger.lifecycle("[Klone] Downloaded ${resolved.localDir.name} @ ${resolved.commitHash.take(8)}")
+
                 val allSubmodules = ModuleDetector.detectAllSubmodules(resolved.localDir)
+
+                when {
+                    allSubmodules.isEmpty() ->
+                        logger.warn("[Klone] No modules detected in ${resolved.localDir.name} — check that build.gradle.kts and settings.gradle.kts exist")
+                    allSubmodules.size == 1 && allSubmodules[0].moduleName == null ->
+                        logger.lifecycle("[Klone] ${resolved.localDir.name}: single-module (${allSubmodules[0].coordinates})")
+                    else ->
+                        logger.lifecycle("[Klone] ${resolved.localDir.name}: ${allSubmodules.size} modules detected — ${allSubmodules.map { it.moduleName ?: "root" }}")
+                }
                 val substitutions = mutableListOf<CompositeIncluder.ModuleSubstitution>()
 
                 for (dep in urlDeps) {

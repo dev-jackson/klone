@@ -30,4 +30,16 @@ class GitDependencyTest {
         val dep = GitDependency("https://github.com/user/mylib.git", GitRef.Branch("main"))
         assertEquals("github.com/user/mylib", dep.cacheKey)
     }
+
+    @Test
+    fun `cacheKey handles SSH URL`() {
+        val dep = GitDependency("git@github.com:square/retrofit.git", GitRef.Branch("main"))
+        assertEquals("github.com/square/retrofit", dep.cacheKey)
+    }
+
+    @Test
+    fun `cacheKey strips embedded auth from HTTPS URL`() {
+        val dep = GitDependency("https://user:token@dev.azure.com/org/project/_git/repo", GitRef.Branch("main"))
+        assertEquals("dev.azure.com/org/project/_git/repo", dep.cacheKey)
+    }
 }

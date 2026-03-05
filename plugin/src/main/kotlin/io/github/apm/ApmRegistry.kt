@@ -40,6 +40,20 @@ object KloneRegistry {
     private fun key(url: String, moduleName: String?): String =
         "${url.normalizeUrl()}#${moduleName ?: ""}"
 
-    private fun String.normalizeUrl(): String =
-        trimEnd('/').removeSuffix(".git").lowercase()
+    private fun String.normalizeUrl(): String {
+        val normalized = when {
+            startsWith("git@") -> {
+                // git@github.com:user/repo.git → github.com/user/repo
+                val host = removePrefix("git@").substringBefore(':')
+                val path = substringAfter(':').removeSuffix(".git")
+                "$host/$path"
+            }
+            else -> {
+                val noScheme = removePrefix("https://").removePrefix("http://")
+                // Strip embedded auth: user:token@host/path → host/path
+                if (noScheme.contains('@')) noScheme.substringAfter('@') else noScheme
+            }
+        }
+        return normalized.trimEnd('/').removeSuffix(".git").lowercase()
+    }
 }

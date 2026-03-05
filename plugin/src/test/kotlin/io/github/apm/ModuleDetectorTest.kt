@@ -115,6 +115,63 @@ class ModuleDetectorTest {
     }
 
     @Test
+    fun `parseSettingsIncludes handles multi-arg include`() {
+        File(tempDir, "build.gradle.kts").writeText("""group = "com.test"""")
+        File(tempDir, "settings.gradle").writeText("""
+            include ':retrofit', ':converter-gson', ':adapter-rxjava2'
+        """.trimIndent())
+
+        listOf("retrofit", "converter-gson", "adapter-rxjava2").forEach {
+            File(tempDir, it).mkdirs()
+            File(tempDir, "$it/build.gradle.kts").writeText("""group = "com.test"""")
+        }
+
+        val result = ModuleDetector.detectAllSubmodules(tempDir)
+
+        assertEquals(3, result.size)
+        assertEquals(setOf("retrofit", "converter-gson", "adapter-rxjava2"), result.map { it.moduleName }.toSet())
+    }
+
+    @Test
+    fun `parseSettingsIncludes handles Groovy without parens`() {
+        File(tempDir, "build.gradle.kts").writeText("""group = "com.test"""")
+        File(tempDir, "settings.gradle").writeText("include ':mylib'")
+
+        File(tempDir, "mylib").mkdirs()
+        File(tempDir, "mylib/build.gradle.kts").writeText("""group = "com.test"""")
+
+        val result = ModuleDetector.detectAllSubmodules(tempDir)
+
+        assertEquals(1, result.size)
+        assertEquals("mylib", result[0].moduleName)
+    }
+
+    @Test
+    fun `detectGroup finds group in allprojects block`() {
+        File(tempDir, "build.gradle").writeText("""
+            allprojects {
+                group = 'com.squareup.retrofit2'
+                version = '2.9.0'
+            }
+        """.trimIndent())
+        File(tempDir, "settings.gradle").writeText("rootProject.name = 'retrofit'")
+
+        val result = ModuleDetector.detect(tempDir, "retrofit")
+
+        assertEquals("com.squareup.retrofit2:retrofit", result)
+    }
+
+    @Test
+    fun `detectGroup reads gradle properties`() {
+        File(tempDir, "gradle.properties").writeText("group=com.squareup.okhttp3\nversion=4.12.0")
+        File(tempDir, "settings.gradle.kts").writeText("""rootProject.name = "okhttp"""")
+
+        val result = ModuleDetector.detect(tempDir, "okhttp")
+
+        assertEquals("com.squareup.okhttp3:okhttp", result)
+    }
+
+    @Test
     fun `detectAllSubmodules falls back to root group when submodule has no group`() {
         File(tempDir, "build.gradle.kts").writeText("""
             group = "com.fallback"
