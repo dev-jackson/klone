@@ -9,10 +9,10 @@ import org.gradle.api.logging.Logging
  * Project-level plugin that provides the gitImplementation() extension function.
  *
  * Usage in settings.gradle.kts:
- *   plugins { id("dev.klone") version "1.0.0" }
+ *   plugins { id("io.github.dev-jackson.klone") version "1.0.0" }
  *
  * Usage in app/build.gradle.kts:
- *   plugins { id("dev.klone.project") }
+ *   plugins { id("io.github.dev-jackson.klone.project") }
  *
  *   dependencies {
  *       // All submodules auto-detected from repo

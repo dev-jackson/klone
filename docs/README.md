@@ -19,7 +19,7 @@ pluginManagement {
 }
 
 plugins {
-    id("dev.klone") version "1.0.0"
+    id("io.github.dev-jackson.klone") version "1.0.0"
 }
 
 rootProject.name = "my-app"
@@ -32,7 +32,7 @@ include(":app")
 // app/build.gradle.kts
 plugins {
     id("com.android.application")
-    id("dev.klone.project")
+    id("io.github.dev-jackson.klone.project")
 }
 
 dependencies {

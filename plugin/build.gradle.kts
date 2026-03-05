@@ -31,14 +31,14 @@ gradlePlugin {
 
     plugins {
         create("kloneSettings") {
-            id = "dev.klone"
+            id = "io.github.dev-jackson.klone"
             implementationClass = "dev.klone.KloneSettingsPlugin"
             displayName = "Klone - Android Package Manager (Settings)"
             description = "SPM-like git-based dependency management for Android"
             tags = listOf("android", "dependency-management", "git", "package-manager")
         }
         create("kloneProject") {
-            id = "dev.klone.project"
+            id = "io.github.dev-jackson.klone.project"
             implementationClass = "dev.klone.KloneProjectPlugin"
             displayName = "Klone - Android Package Manager (Project)"
             description = "Provides gitImplementation() for use in the dependencies {} block"
