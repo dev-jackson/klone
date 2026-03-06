@@ -50,6 +50,7 @@ class KloneSettingsPlugin : Plugin<Settings> {
 
                 injectSdkDir(resolved.localDir, settings.rootDir)
                 injectGradleProperties(resolved.localDir, settings.rootDir)
+                injectHostRepositories(resolved.localDir, settings.rootDir)
 
                 val extraRepos = ModuleDetector.extractMavenUrls(resolved.localDir)
                 if (extraRepos.isNotEmpty()) {
@@ -189,6 +190,83 @@ class KloneSettingsPlugin : Plugin<Settings> {
 
         clonedPropsFile.writeText(newContent)
         logger.lifecycle("[Klone] Propagated ${toInject.size} gradle.properties entr${if (toInject.size == 1) "y" else "ies"} into ${localDir.name}")
+    }
+
+    internal fun injectHostRepositories(localDir: File, hostRootDir: File) {
+        val hostSettingsFile = File(hostRootDir, "settings.gradle.kts").takeIf { it.exists() }
+            ?: File(hostRootDir, "settings.gradle").takeIf { it.exists() }
+            ?: return
+
+        val hostContent = hostSettingsFile.readText()
+        val privateMavenBlocks = extractMavenBlocks(hostContent).filter { block ->
+            val url = extractUrlFromMavenBlock(block)
+            url != null && !isPublicRepo(url)
+        }
+        if (privateMavenBlocks.isEmpty()) return
+
+        val clonedSettingsFile = File(localDir, "settings.gradle.kts").takeIf { it.exists() }
+            ?: File(localDir, "settings.gradle").takeIf { it.exists() }
+            ?: return
+
+        val clonedContent = clonedSettingsFile.readText()
+        val reposBlock = privateMavenBlocks.joinToString("\n") { "        $it" }
+        val sentinelBlock = """// <klone-repos>
+dependencyResolutionManagement {
+    repositories {
+$reposBlock
+    }
+}
+// </klone-repos>"""
+
+        val startTag = "// <klone-repos>"
+        val endTag = "// </klone-repos>"
+
+        val newContent = if (clonedContent.contains(startTag)) {
+            val start = clonedContent.indexOf(startTag)
+            val end = clonedContent.indexOf(endTag)
+            if (end == -1) clonedContent else
+                clonedContent.substring(0, start) + sentinelBlock + clonedContent.substring(end + endTag.length)
+        } else {
+            clonedContent.trimEnd { it == '\n' } + "\n\n$sentinelBlock\n"
+        }
+
+        clonedSettingsFile.writeText(newContent)
+        logger.lifecycle("[Klone] Propagated ${privateMavenBlocks.size} private Maven repo(s) into ${localDir.name}/settings")
+    }
+
+    internal fun extractMavenBlocks(content: String): List<String> {
+        val result = mutableListOf<String>()
+        val regex = Regex("""maven\s*\{""")
+        for (match in regex.findAll(content)) {
+            val start = match.range.first
+            var depth = 0
+            var end = start
+            for (i in match.range.last..content.lastIndex) {
+                if (content[i] == '{') depth++
+                else if (content[i] == '}') {
+                    depth--
+                    if (depth == 0) { end = i; break }
+                }
+            }
+            result.add(content.substring(start, end + 1))
+        }
+        return result
+    }
+
+    internal fun extractUrlFromMavenBlock(block: String): String? {
+        val match = Regex("""url\s*=?\s*(?:uri\s*\(\s*)?["']([^"']+)["']""").find(block)
+        return match?.groupValues?.get(1)
+    }
+
+    private fun isPublicRepo(url: String): Boolean {
+        val publicPrefixes = listOf(
+            "https://dl.google.com/dl/android/maven2",
+            "https://repo1.maven.org/maven2",
+            "https://repo.maven.apache.org/maven2",
+            "https://jcenter.bintray.com",
+            "https://plugins.gradle.org/m2",
+        )
+        return publicPrefixes.any { url.startsWith(it) }
     }
 
     private fun removeSentinelBlock(content: String): String {
