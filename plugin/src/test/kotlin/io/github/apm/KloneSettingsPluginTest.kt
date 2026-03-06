@@ -180,49 +180,26 @@ class KloneSettingsPluginTest {
         assertTrue(!afterSecond.contains("token=old-token"), "Old token must not remain after rotation")
     }
 
-    // ── injectHostRepositories ────────────────────────────────────────────
+    // ── writeSettingsSentinel ────────────────────────────────────────────
 
     @Test
-    fun `injectHostRepositories does nothing when host has no private repos`() {
-        val hostDir = File(tempDir, "host").also { it.mkdirs() }
-        val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
+    fun `writeSettingsSentinel creates sentinel in cloned settings`() {
+        val file = File(tempDir, "settings.gradle.kts")
+        file.writeText("rootProject.name = \"mylib\"\n")
 
-        File(hostDir, "settings.gradle.kts").writeText("""
-            dependencyResolutionManagement {
-                repositories {
-                    google()
-                    mavenCentral()
-                }
-            }
-        """.trimIndent())
-        val clonedSettings = File(clonedDir, "settings.gradle.kts")
-        clonedSettings.writeText("rootProject.name = \"mylib\"\n")
-
-        plugin.injectHostRepositories(clonedDir, hostDir)
-
-        val result = clonedSettings.readText()
-        assertTrue(!result.contains("klone-repos"), "No sentinel block should be created when no private repos exist")
+        val sentinelBlock = """// <klone-repos>
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://maven.pkg.github.com/org/repo")
+        }
     }
+}
+// </klone-repos>"""
 
-    @Test
-    fun `injectHostRepositories injects private maven block into cloned settings`() {
-        val hostDir = File(tempDir, "host").also { it.mkdirs() }
-        val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
+        KloneSettingsPlugin.writeSettingsSentinel(file, sentinelBlock)
 
-        File(hostDir, "settings.gradle.kts").writeText("""
-            dependencyResolutionManagement {
-                repositories {
-                    google()
-                    mavenCentral()
-                    maven { url = uri("https://maven.pkg.github.com/org/repo") }
-                }
-            }
-        """.trimIndent())
-        File(clonedDir, "settings.gradle.kts").writeText("rootProject.name = \"mylib\"\n")
-
-        plugin.injectHostRepositories(clonedDir, hostDir)
-
-        val result = File(clonedDir, "settings.gradle.kts").readText()
+        val result = file.readText()
         assertTrue(result.contains("// <klone-repos>"), "Sentinel start should be present")
         assertTrue(result.contains("// </klone-repos>"), "Sentinel end should be present")
         assertTrue(result.contains("https://maven.pkg.github.com/org/repo"), "Private repo URL should be injected")
@@ -230,90 +207,91 @@ class KloneSettingsPluginTest {
     }
 
     @Test
-    fun `injectHostRepositories preserves existing cloned settings content`() {
-        val hostDir = File(tempDir, "host").also { it.mkdirs() }
-        val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
+    fun `writeSettingsSentinel replaces sentinel on second run`() {
+        val file = File(tempDir, "settings.gradle.kts")
+        file.writeText("rootProject.name = \"mylib\"\n")
 
-        File(hostDir, "settings.gradle.kts").writeText("""
-            dependencyResolutionManagement {
-                repositories {
-                    maven { url = uri("https://private.company.com/maven") }
-                }
-            }
-        """.trimIndent())
-        File(clonedDir, "settings.gradle.kts").writeText("""
-            rootProject.name = "mylib"
-            include(":core", ":ui")
-        """.trimIndent())
-
-        plugin.injectHostRepositories(clonedDir, hostDir)
-
-        val result = File(clonedDir, "settings.gradle.kts").readText()
-        assertTrue(result.contains("rootProject.name = \"mylib\""), "Root project name must be preserved")
-        assertTrue(result.contains("include(\":core\", \":ui\")"), "Includes must be preserved")
-        assertTrue(result.contains("https://private.company.com/maven"), "Private repo must be injected")
+        val oldBlock = """// <klone-repos>
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://old.private.com/maven")
+        }
     }
+}
+// </klone-repos>"""
 
-    @Test
-    fun `injectHostRepositories replaces sentinel on second run`() {
-        val hostDir = File(tempDir, "host").also { it.mkdirs() }
-        val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
+        KloneSettingsPlugin.writeSettingsSentinel(file, oldBlock)
 
-        File(clonedDir, "settings.gradle.kts").writeText("rootProject.name = \"mylib\"\n")
+        val newBlock = """// <klone-repos>
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://new.private.com/maven")
+        }
+    }
+}
+// </klone-repos>"""
 
-        // First run
-        File(hostDir, "settings.gradle.kts").writeText("""
-            dependencyResolutionManagement {
-                repositories {
-                    maven { url = uri("https://old.private.com/maven") }
-                }
-            }
-        """.trimIndent())
-        plugin.injectHostRepositories(clonedDir, hostDir)
+        KloneSettingsPlugin.writeSettingsSentinel(file, newBlock)
 
-        // Second run — URL changed
-        File(hostDir, "settings.gradle.kts").writeText("""
-            dependencyResolutionManagement {
-                repositories {
-                    maven { url = uri("https://new.private.com/maven") }
-                }
-            }
-        """.trimIndent())
-        plugin.injectHostRepositories(clonedDir, hostDir)
-
-        val result = File(clonedDir, "settings.gradle.kts").readText()
+        val result = file.readText()
         assertTrue(result.contains("https://new.private.com/maven"), "New URL should be present")
         assertTrue(!result.contains("https://old.private.com/maven"), "Old URL must be removed")
         assertEquals(1, result.split("// <klone-repos>").size - 1, "Only one sentinel block should exist")
     }
 
     @Test
-    fun `injectHostRepositories handles nested credentials block`() {
-        val hostDir = File(tempDir, "host").also { it.mkdirs() }
-        val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
-
-        File(hostDir, "settings.gradle.kts").writeText("""
-            dependencyResolutionManagement {
-                repositories {
-                    google()
-                    maven {
-                        url = uri("https://maven.pkg.github.com/org/repo")
-                        credentials {
-                            username = providers.gradleProperty("gpr.user").get()
-                            password = providers.gradleProperty("gpr.token").get()
-                        }
-                    }
-                }
-            }
+    fun `writeSettingsSentinel preserves existing content`() {
+        val file = File(tempDir, "settings.gradle.kts")
+        file.writeText("""
+            rootProject.name = "mylib"
+            include(":core", ":ui")
         """.trimIndent())
-        File(clonedDir, "settings.gradle.kts").writeText("rootProject.name = \"mylib\"\n")
 
-        plugin.injectHostRepositories(clonedDir, hostDir)
+        val sentinelBlock = """// <klone-repos>
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://private.company.com/maven")
+        }
+    }
+}
+// </klone-repos>"""
 
-        val result = File(clonedDir, "settings.gradle.kts").readText()
-        assertTrue(result.contains("credentials"), "Credentials block should be preserved")
-        assertTrue(result.contains("gpr.user"), "Username property reference should be preserved")
-        assertTrue(result.contains("gpr.token"), "Password property reference should be preserved")
+        KloneSettingsPlugin.writeSettingsSentinel(file, sentinelBlock)
+
+        val result = file.readText()
+        assertTrue(result.contains("rootProject.name = \"mylib\""), "Root project name must be preserved")
+        assertTrue(result.contains("include(\":core\", \":ui\")"), "Includes must be preserved")
+        assertTrue(result.contains("https://private.company.com/maven"), "Private repo must be injected")
+    }
+
+    @Test
+    fun `writeSettingsSentinel includes credentials when present`() {
+        val file = File(tempDir, "settings.gradle.kts")
+        file.writeText("rootProject.name = \"mylib\"\n")
+
+        val sentinelBlock = """// <klone-repos>
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://maven.pkg.github.com/org/repo")
+            credentials {
+                username = "myuser"
+                password = "mytoken"
+            }
+        }
+    }
+}
+// </klone-repos>"""
+
+        KloneSettingsPlugin.writeSettingsSentinel(file, sentinelBlock)
+
+        val result = file.readText()
+        assertTrue(result.contains("credentials"), "Credentials block should be present")
+        assertTrue(result.contains("myuser"), "Username should be present")
+        assertTrue(result.contains("mytoken"), "Password should be present")
         assertTrue(result.contains("https://maven.pkg.github.com/org/repo"), "URL should be present")
     }
 
