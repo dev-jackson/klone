@@ -48,6 +48,8 @@ class KloneSettingsPlugin : Plugin<Settings> {
 
                 logger.lifecycle("[Klone] Downloaded ${resolved.localDir.name} @ ${resolved.commitHash.take(8)}")
 
+                injectSdkDir(resolved.localDir, settings.rootDir)
+
                 val extraRepos = ModuleDetector.extractMavenUrls(resolved.localDir)
                 if (extraRepos.isNotEmpty()) {
                     logger.lifecycle("[Klone] Propagating ${extraRepos.size} repository(ies) from ${resolved.localDir.name}")
@@ -120,6 +122,31 @@ class KloneSettingsPlugin : Plugin<Settings> {
                 lockManager.write(lockEntries)
             }
         }
+    }
+
+    internal fun injectSdkDir(localDir: File, hostRootDir: File) {
+        val clonedProps = File(localDir, "local.properties")
+        if (clonedProps.exists() && clonedProps.readText().contains("sdk.dir")) return
+
+        val sdkLine = readSdkDirFromHost(hostRootDir) ?: run {
+            logger.warn("[Klone] No sdk.dir found in host local.properties — skipping injection for ${localDir.name}")
+            return
+        }
+
+        if (clonedProps.exists()) {
+            clonedProps.appendText("\n$sdkLine\n")
+        } else {
+            clonedProps.writeText("# Propagated by Klone from host project\n$sdkLine\n")
+        }
+        logger.lifecycle("[Klone] Propagated sdk.dir into ${localDir.name}/local.properties")
+    }
+
+    internal fun readSdkDirFromHost(hostRootDir: File): String? {
+        val hostProps = File(hostRootDir, "local.properties")
+        if (!hostProps.exists()) return null
+        return Regex("""^sdk\.dir=.+$""", RegexOption.MULTILINE)
+            .find(hostProps.readText())
+            ?.value
     }
 
     private fun mergeUnique(scanned: List<GitDependency>, explicit: List<GitDependency>): List<GitDependency> {
