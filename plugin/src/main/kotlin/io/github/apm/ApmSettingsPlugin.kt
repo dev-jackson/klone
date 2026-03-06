@@ -48,6 +48,16 @@ class KloneSettingsPlugin : Plugin<Settings> {
 
                 logger.lifecycle("[Klone] Downloaded ${resolved.localDir.name} @ ${resolved.commitHash.take(8)}")
 
+                val extraRepos = ModuleDetector.extractMavenUrls(resolved.localDir)
+                if (extraRepos.isNotEmpty()) {
+                    logger.lifecycle("[Klone] Propagating ${extraRepos.size} repository(ies) from ${resolved.localDir.name}")
+                    settings.dependencyResolutionManagement.repositories { handler ->
+                        for (url in extraRepos) {
+                            handler.maven { repo -> repo.url = java.net.URI(url) }
+                        }
+                    }
+                }
+
                 val allSubmodules = ModuleDetector.detectAllSubmodules(resolved.localDir)
 
                 when {

@@ -208,6 +208,51 @@ class ModuleDetectorTest {
     }
 
     @Test
+    fun `extractMavenUrls finds maven url in settings kts`() {
+        File(tempDir, "settings.gradle.kts").writeText("""
+            dependencyResolutionManagement {
+                repositories {
+                    maven { url = "https://jitpack.io" }
+                    maven { url = "https://artifacts.example.com/repo" }
+                }
+            }
+        """.trimIndent())
+
+        val result = ModuleDetector.extractMavenUrls(tempDir)
+
+        assertEquals(listOf("https://jitpack.io", "https://artifacts.example.com/repo"), result)
+    }
+
+    @Test
+    fun `extractMavenUrls finds maven url in groovy settings`() {
+        File(tempDir, "settings.gradle").writeText("""
+            dependencyResolutionManagement {
+                repositories {
+                    maven { url 'https://jitpack.io' }
+                }
+            }
+        """.trimIndent())
+
+        val result = ModuleDetector.extractMavenUrls(tempDir)
+
+        assertEquals(listOf("https://jitpack.io"), result)
+    }
+
+    @Test
+    fun `extractMavenUrls ignores non-http entries`() {
+        File(tempDir, "build.gradle.kts").writeText("""
+            repositories {
+                maven { url = "file:///local/repo" }
+                maven { url = "https://valid.repo.com/maven2" }
+            }
+        """.trimIndent())
+
+        val result = ModuleDetector.extractMavenUrls(tempDir)
+
+        assertEquals(listOf("https://valid.repo.com/maven2"), result)
+    }
+
+    @Test
     fun `detectAllSubmodules falls back to root group when submodule has no group`() {
         File(tempDir, "build.gradle.kts").writeText("""
             group = "com.fallback"

@@ -25,6 +25,8 @@ object ModuleDetector {
         }
 
         return includes.mapNotNull { projectPath ->
+            // Skip :app modules — they're sample/demo apps, not libraries
+            if (projectPath.substringAfterLast(':') == "app") return@mapNotNull null
             val subDir = projectPathToDir(repoDir, projectPath)
             val group = detectGroup(subDir) ?: detectGroup(repoDir) ?: return@mapNotNull null
             val artifactId = projectPath.substringAfterLast(':')
@@ -112,6 +114,25 @@ object ModuleDetector {
             if (namespace != null) return namespace.groupValues[1]
         }
         return null
+    }
+
+    fun extractMavenUrls(repoDir: File): List<String> {
+        val results = mutableListOf<String>()
+        val filesToScan = listOf(
+            File(repoDir, "settings.gradle.kts"),
+            File(repoDir, "settings.gradle"),
+            File(repoDir, "build.gradle.kts"),
+            File(repoDir, "build.gradle"),
+        )
+        val urlPattern = Regex(
+            """maven\s*\{[^}]*?url\s*=?\s*(?:uri\s*\(\s*)?["']([^"']+)["']""",
+            setOf(RegexOption.DOT_MATCHES_ALL)
+        )
+        for (file in filesToScan) {
+            if (!file.exists()) continue
+            urlPattern.findAll(file.readText()).forEach { results.add(it.groupValues[1]) }
+        }
+        return results.distinct().filter { it.startsWith("http") }
     }
 
     private fun detectArtifactId(repoDir: File): String? {
