@@ -49,6 +49,7 @@ class KloneSettingsPlugin : Plugin<Settings> {
                 logger.lifecycle("[Klone] Downloaded ${resolved.localDir.name} @ ${resolved.commitHash.take(8)}")
 
                 injectSdkDir(resolved.localDir, settings.rootDir)
+                injectGradleProperties(resolved.localDir, settings.rootDir)
 
                 val extraRepos = ModuleDetector.extractMavenUrls(resolved.localDir)
                 if (extraRepos.isNotEmpty()) {
@@ -147,6 +148,70 @@ class KloneSettingsPlugin : Plugin<Settings> {
         return Regex("""^sdk\.dir=.+$""", RegexOption.MULTILINE)
             .find(hostProps.readText())
             ?.value
+    }
+
+    internal fun injectGradleProperties(localDir: File, hostRootDir: File) {
+        val merged = java.util.Properties()
+        hostRootDir.listFiles { f -> f.isFile && f.name.endsWith(".properties") }
+            ?.sortedBy { it.name }
+            ?.forEach { f -> f.inputStream().use { merged.load(it) } }
+        if (merged.isEmpty) return
+
+        val clonedPropsFile = File(localDir, "gradle.properties")
+        val existingContent = if (clonedPropsFile.exists()) clonedPropsFile.readText() else ""
+
+        // Original content = everything outside the sentinel block (never modified)
+        val originalContent = removeSentinelBlock(existingContent)
+        val originalKeys: Set<String> = java.util.Properties().also { p ->
+            if (originalContent.isNotBlank()) p.load(originalContent.reader())
+        }.stringPropertyNames()
+
+        val toInject = merged.stringPropertyNames()
+            .filter { it !in originalKeys }
+            .sorted()
+
+        if (toInject.isEmpty()) {
+            // Clean up stale sentinel block if nothing to inject anymore
+            if (existingContent != originalContent) clonedPropsFile.writeText(originalContent)
+            return
+        }
+
+        val lines = toInject.joinToString("\n") { key -> "$key=${merged.getProperty(key)}" }
+        val sentinelBlock = "# <klone-injected>\n$lines\n# </klone-injected>"
+
+        val newContent = when {
+            existingContent.contains("# <klone-injected>") ->
+                replaceSentinelBlock(existingContent, sentinelBlock)
+            originalContent.isNotEmpty() ->
+                originalContent.trimEnd { it == '\n' } + "\n\n$sentinelBlock\n"
+            else -> "$sentinelBlock\n"
+        }
+
+        clonedPropsFile.writeText(newContent)
+        logger.lifecycle("[Klone] Propagated ${toInject.size} gradle.properties entr${if (toInject.size == 1) "y" else "ies"} into ${localDir.name}")
+    }
+
+    private fun removeSentinelBlock(content: String): String {
+        val startTag = "# <klone-injected>"
+        val endTag = "# </klone-injected>"
+        val start = content.indexOf(startTag)
+        val end = content.indexOf(endTag)
+        if (start == -1 || end == -1) return content
+        val before = content.substring(0, start).trimEnd { it == '\n' }
+        val after = content.substring(end + endTag.length).trimStart { it == '\n' }
+        return buildString {
+            if (before.isNotEmpty()) append(before).append('\n')
+            append(after)
+        }
+    }
+
+    private fun replaceSentinelBlock(content: String, newBlock: String): String {
+        val startTag = "# <klone-injected>"
+        val endTag = "# </klone-injected>"
+        val start = content.indexOf(startTag)
+        val end = content.indexOf(endTag)
+        if (start == -1 || end == -1) return content
+        return content.substring(0, start) + newBlock + content.substring(end + endTag.length)
     }
 
     private fun mergeUnique(scanned: List<GitDependency>, explicit: List<GitDependency>): List<GitDependency> {
