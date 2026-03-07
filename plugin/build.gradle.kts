@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "io.github.dev-jackson"
-version = "1.1.6"
+version = "1.1.7"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -33,16 +33,16 @@ gradlePlugin {
         create("kloneSettings") {
             id = "io.github.dev-jackson.klone"
             implementationClass = "dev.klone.KloneSettingsPlugin"
-            displayName = "Klone - Android Package Manager (Settings)"
-            description = "SPM-like git-based dependency management for Android"
-            tags = listOf("android", "dependency-management", "git", "package-manager")
+            displayName = "Klone — Git Dependency Manager for Android (Settings)"
+            description = "Apply in settings.gradle.kts. Clones git repos, auto-detects Gradle modules, and sets up Composite Builds so gitImplementation() resolves to local source."
+            tags = listOf("android", "dependency-management", "git", "package-manager", "composite-build", "gradle-plugin", "kotlin")
         }
         create("kloneProject") {
             id = "io.github.dev-jackson.klone.project"
             implementationClass = "dev.klone.KloneProjectPlugin"
-            displayName = "Klone - Android Package Manager (Project)"
-            description = "Provides gitImplementation() for use in the dependencies {} block"
-            tags = listOf("android", "dependency-management", "git", "package-manager")
+            displayName = "Klone — Git Dependency Manager for Android (Project)"
+            description = "Apply in app/build.gradle.kts. Adds gitImplementation(url, from/branch/commit) to the dependencies block."
+            tags = listOf("android", "dependency-management", "git", "package-manager", "composite-build", "gradle-plugin", "kotlin")
         }
     }
 }
@@ -54,8 +54,12 @@ mavenPublishing {
     coordinates(group.toString(), "klone-gradle-plugin", version.toString())
 
     pom {
-        name = "Klone"
-        description = "SPM-like git-based dependency management for Android. Declare Android library dependencies by git URL."
+        name = "Klone — Git Dependency Manager for Android"
+        description = "Klone brings Swift Package Manager-style git dependency management to Android and Gradle. " +
+            "Declare library dependencies by GitHub/GitLab/Bitbucket URL directly in build.gradle.kts using gitImplementation(). " +
+            "Klone clones the repo, auto-detects its Gradle modules, and wires everything up as a Composite Build — " +
+            "no binary publishing required. Supports tags, branches, and exact commits. Works with private repos. " +
+            "Apply io.github.dev-jackson.klone in settings.gradle.kts and io.github.dev-jackson.klone.project in your module."
         inceptionYear = "2026"
         url = "https://github.com/dev-jackson/klone"
 

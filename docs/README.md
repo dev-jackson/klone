@@ -14,12 +14,12 @@ Declare Android library dependencies by git URL — Klone clones, caches, and wi
 pluginManagement {
     repositories {
         gradlePluginPortal()
-        mavenLocal() // during local development
+        mavenCentral()
     }
 }
 
 plugins {
-    id("io.github.dev-jackson.klone") version "1.0.0"
+    id("io.github.dev-jackson.klone") version "1.1.6"
 }
 
 rootProject.name = "my-app"
@@ -253,5 +253,5 @@ Published to `~/.m2/repository/dev/klone/`. Only works on the same machine.
 
 | Plugin ID | Applied in | Purpose |
 |-----------|-----------|---------|
-| `dev.klone` | `settings.gradle.kts` | Clones repos, sets up composite builds |
-| `dev.klone.project` | `app/build.gradle.kts` | Provides `gitImplementation()` |
+| `io.github.dev-jackson.klone` | `settings.gradle.kts` | Clones repos, sets up composite builds |
+| `io.github.dev-jackson.klone.project` | `app/build.gradle.kts` | Provides `gitImplementation()` |
