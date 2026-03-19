@@ -2,6 +2,7 @@ package dev.klone
 
 import dev.klone.composite.CompositeIncluder
 import dev.klone.model.GitDependency
+import dev.klone.model.LocalDependency
 import dev.klone.resolver.BuildFileScanner
 import dev.klone.resolver.GitResolver
 import dev.klone.resolver.LockFileManager
@@ -123,6 +124,69 @@ class KloneSettingsPlugin : Plugin<Settings> {
 
             if (lockEntries.isNotEmpty()) {
                 lockManager.write(lockEntries)
+            }
+
+            // --- Local dependencies ---
+            val scannedLocal = BuildFileScanner.scanProjectForLocal(settings.rootDir)
+            val explicitLocal = extension.localDependencies
+            val allLocalDeps = (scannedLocal + explicitLocal).distinctBy { it.path }
+
+            if (allLocalDeps.isNotEmpty()) {
+                logger.lifecycle("[Klone] Resolving ${allLocalDeps.size} local dependency declaration(s)...")
+            }
+
+            for (dep in allLocalDeps) {
+                val localDir = resolveLocalPath(dep.path, settings.rootDir)
+
+                require(localDir.exists()) {
+                    "Local dependency path does not exist: ${localDir.absolutePath}"
+                }
+                require(hasBuildFile(localDir)) {
+                    "No build.gradle.kts or build.gradle found at: ${localDir.absolutePath}"
+                }
+
+                val registryKey = "local:${localDir.absolutePath}"
+
+                val allSubmodules = ModuleDetector.detectAllSubmodules(localDir)
+
+                when {
+                    allSubmodules.isEmpty() ->
+                        logger.warn("[Klone] No modules detected in ${localDir.name} — check that build.gradle.kts and settings.gradle.kts exist")
+                    allSubmodules.size == 1 && allSubmodules[0].moduleName == null ->
+                        logger.lifecycle("[Klone] ${localDir.name}: single-module (${allSubmodules[0].coordinates})")
+                    else ->
+                        logger.lifecycle("[Klone] ${localDir.name}: ${allSubmodules.size} modules detected — ${allSubmodules.map { it.moduleName ?: "root" }}")
+                }
+
+                val substitutions = mutableListOf<CompositeIncluder.ModuleSubstitution>()
+
+                if (dep.moduleCoordinates != null) {
+                    KloneRegistry.register(registryKey, null, KloneRegistry.Entry(
+                        url = registryKey,
+                        moduleCoordinates = dep.moduleCoordinates,
+                        localDir = localDir
+                    ))
+                    substitutions.add(CompositeIncluder.ModuleSubstitution(dep.moduleCoordinates, ":"))
+                } else {
+                    val targetSubmodules = when {
+                        dep.submoduleNames == null -> allSubmodules
+                        dep.submoduleNames.isEmpty() -> allSubmodules.filter { it.projectPath == ":" }
+                        else -> allSubmodules.filter { it.moduleName in dep.submoduleNames }
+                    }
+
+                    for (info in targetSubmodules) {
+                        KloneRegistry.register(registryKey, info.moduleName, KloneRegistry.Entry(
+                            url = registryKey,
+                            moduleCoordinates = info.coordinates,
+                            localDir = localDir
+                        ))
+                        substitutions.add(CompositeIncluder.ModuleSubstitution(info.coordinates, info.projectPath))
+                    }
+                }
+
+                val distinctSubs = substitutions.distinctBy { it.coordinates }
+                CompositeIncluder.includeAll(settings, localDir, distinctSubs)
+                logger.lifecycle("[Klone] Included local ${localDir.name} (${distinctSubs.size} module substitution(s))")
             }
         }
     }
@@ -309,6 +373,14 @@ class KloneSettingsPlugin : Plugin<Settings> {
         if (start == -1 || end == -1) return content
         return content.substring(0, start) + newBlock + content.substring(end + endTag.length)
     }
+
+    private fun resolveLocalPath(path: String, rootDir: File): File {
+        val file = File(path)
+        return if (file.isAbsolute) file else File(rootDir, path).canonicalFile
+    }
+
+    private fun hasBuildFile(dir: File): Boolean =
+        File(dir, "build.gradle.kts").exists() || File(dir, "build.gradle").exists()
 
     private fun mergeUnique(scanned: List<GitDependency>, explicit: List<GitDependency>): List<GitDependency> {
         val keyFor = { dep: GitDependency -> dep.url + "#" + dep.submoduleNames?.joinToString(",") }

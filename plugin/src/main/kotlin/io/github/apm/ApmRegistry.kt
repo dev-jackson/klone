@@ -41,6 +41,7 @@ object KloneRegistry {
         "${url.normalizeUrl()}#${moduleName ?: ""}"
 
     private fun String.normalizeUrl(): String {
+        if (startsWith("local:")) return this
         val normalized = when {
             startsWith("git@") -> {
                 // git@github.com:user/repo.git → github.com/user/repo

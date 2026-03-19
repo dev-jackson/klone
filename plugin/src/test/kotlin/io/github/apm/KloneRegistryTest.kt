@@ -86,4 +86,44 @@ class KloneRegistryTest {
     fun `allModulesFor returns empty list for unknown url`() {
         assertTrue(KloneRegistry.allModulesFor("https://github.com/unknown/repo").isEmpty())
     }
+
+    @Test
+    fun `register and find with local prefix`() {
+        val entry = KloneRegistry.Entry(
+            url = "local:/some/path/to/lib",
+            moduleCoordinates = "com.example:mylib",
+            localDir = tempDir
+        )
+        KloneRegistry.register("local:/some/path/to/lib", null, entry)
+
+        val found = KloneRegistry.find("local:/some/path/to/lib", null)
+        assertEquals(entry, found)
+    }
+
+    @Test
+    fun `normalizeUrl does not modify local prefix`() {
+        val entry = KloneRegistry.Entry(
+            url = "local:/some/path",
+            moduleCoordinates = "com.example:lib",
+            localDir = tempDir
+        )
+        KloneRegistry.register("local:/some/path", null, entry)
+
+        // Same key retrieves it — proves no normalization happened
+        assertEquals(entry, KloneRegistry.find("local:/some/path", null))
+    }
+
+    @Test
+    fun `allModulesFor works with local prefix`() {
+        val key = "local:/libs/mylib"
+        val mkEntry = { coords: String -> KloneRegistry.Entry(key, coords, tempDir) }
+
+        KloneRegistry.register(key, null, mkEntry("com.example:mylib"))
+        KloneRegistry.register(key, "sub1", mkEntry("com.example:sub1"))
+
+        val modules = KloneRegistry.allModulesFor(key)
+        assertEquals(2, modules.size)
+        assertTrue(null in modules)
+        assertTrue("sub1" in modules)
+    }
 }

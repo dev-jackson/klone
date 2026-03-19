@@ -2,6 +2,7 @@ package dev.klone.resolver
 
 import dev.klone.model.GitDependency
 import dev.klone.model.GitRef
+import dev.klone.model.LocalDependency
 import java.io.File
 
 /**
@@ -84,5 +85,61 @@ object BuildFileScanner {
         BRANCH_PARAM.find(params)?.let { return GitRef.Branch(it.groupValues[1]) }
         COMMIT_PARAM.find(params)?.let { return GitRef.Commit(it.groupValues[1]) }
         return null
+    }
+
+    // --- Local dependency scanning ---
+
+    private val LOCAL_MODULES_CALL_PATTERN = Regex(
+        """localImplementation\s*\(\s*["']([^"']+)["']([^(]*)\bmodules\s*=\s*listOf\s*\(([^)]*)\)([^)]*)\)"""
+    )
+
+    private val LOCAL_SIMPLE_CALL_PATTERN = Regex(
+        """localImplementation\s*\(\s*["']([^"']+)["']([^)(]*)\)"""
+    )
+
+    fun scanProjectForLocal(projectDir: File): List<LocalDependency> {
+        return projectDir.walkTopDown()
+            .filter { it.name == "build.gradle.kts" || it.name == "build.gradle" }
+            .filter { !it.absolutePath.contains("${File.separator}build${File.separator}") }
+            .flatMap { scanFileForLocal(it) }
+            .distinctBy { it.path }
+            .toList()
+    }
+
+    fun scanFileForLocal(buildFile: File): List<LocalDependency> {
+        if (!buildFile.exists()) return emptyList()
+        val content = buildFile.readText()
+        val deps = mutableListOf<LocalDependency>()
+
+        LOCAL_MODULES_CALL_PATTERN.findAll(content).forEach { match ->
+            val path = match.groupValues[1]
+            val paramsBefore = match.groupValues[2]
+            val listContent = match.groupValues[3]
+            val paramsAfter = match.groupValues[4]
+
+            val allParams = paramsBefore + paramsAfter
+            val moduleCoords = MODULE_PARAM.find(allParams)?.groupValues?.get(1)
+            val moduleNames = STRING_LITERAL.findAll(listContent).map { it.groupValues[1] }.toList()
+
+            deps += LocalDependency(
+                path = path,
+                moduleCoordinates = moduleCoords,
+                submoduleNames = moduleNames
+            )
+        }
+
+        LOCAL_SIMPLE_CALL_PATTERN.findAll(content).forEach { match ->
+            val path = match.groupValues[1]
+            val params = match.groupValues[2]
+
+            val moduleCoords = MODULE_PARAM.find(params)?.groupValues?.get(1)
+
+            deps += LocalDependency(
+                path = path,
+                moduleCoordinates = moduleCoords
+            )
+        }
+
+        return deps.distinctBy { it.path }
     }
 }

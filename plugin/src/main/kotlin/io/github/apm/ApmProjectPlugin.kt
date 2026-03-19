@@ -4,6 +4,7 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.artifacts.dsl.DependencyHandler
 import org.gradle.api.logging.Logging
+import java.io.File
 
 /**
  * Project-level plugin that provides the gitImplementation() extension function.
@@ -36,6 +37,49 @@ class KloneProjectPlugin : Plugin<Project> {
 // ---------------------------------------------------------------------------
 // Extension functions — used directly in the dependencies {} block
 // ---------------------------------------------------------------------------
+
+fun DependencyHandler.localImplementation(
+    path: String,
+    module: String? = null,
+    modules: List<String>? = null
+) {
+    val logger = Logging.getLogger("Klone")
+
+    val canonicalPath = File(path).let {
+        if (it.isAbsolute) it.canonicalPath else File(path).canonicalPath
+    }
+    val registryKey = "local:$canonicalPath"
+
+    val requestedModuleNames: List<String?>? = when {
+        module != null -> listOf(module)
+        modules != null -> modules
+        else -> null
+    }
+
+    val moduleNames: List<String?> = if (requestedModuleNames != null) {
+        requestedModuleNames
+    } else {
+        val all = KloneRegistry.allModulesFor(registryKey)
+        if (all.isEmpty()) listOf(null) else all
+    }
+
+    for (modName in moduleNames) {
+        val entry = KloneRegistry.find(registryKey, modName)
+        if (entry == null) {
+            logger.warn("[Klone] Local module not found in registry: $registryKey#${modName ?: "root"}\n" +
+                "Make sure the Klone settings plugin (dev.klone) is applied in settings.gradle.kts.")
+            continue
+        }
+
+        val coords = entry.moduleCoordinates
+        if (coords == null) {
+            logger.warn("[Klone] Could not detect module coordinates for local path $path — skipping substitution.")
+            continue
+        }
+
+        add("implementation", coords)
+    }
+}
 
 fun DependencyHandler.gitImplementation(
     url: String,

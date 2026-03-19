@@ -138,6 +138,86 @@ class BuildFileScannerTest {
         assertEquals(null, deps[0].submoduleNames)
     }
 
+    // --- localImplementation() scanning tests ---
+
+    @Test
+    fun `detects localImplementation with absolute path`() {
+        val file = buildFile("""
+            dependencies {
+                localImplementation("/absolute/path/to/lib")
+            }
+        """.trimIndent())
+
+        val deps = BuildFileScanner.scanFileForLocal(file)
+
+        assertEquals(1, deps.size)
+        assertEquals("/absolute/path/to/lib", deps[0].path)
+        assertEquals(null, deps[0].moduleCoordinates)
+        assertEquals(null, deps[0].submoduleNames)
+    }
+
+    @Test
+    fun `detects localImplementation with relative path`() {
+        val file = buildFile("""
+            dependencies {
+                localImplementation("../my-library")
+            }
+        """.trimIndent())
+
+        val deps = BuildFileScanner.scanFileForLocal(file)
+
+        assertEquals(1, deps.size)
+        assertEquals("../my-library", deps[0].path)
+    }
+
+    @Test
+    fun `detects localImplementation with module param`() {
+        val file = buildFile("""
+            dependencies {
+                localImplementation("/path/to/lib", module = "core")
+            }
+        """.trimIndent())
+
+        val deps = BuildFileScanner.scanFileForLocal(file)
+
+        assertEquals(1, deps.size)
+        assertEquals("/path/to/lib", deps[0].path)
+        assertEquals("core", deps[0].moduleCoordinates)
+    }
+
+    @Test
+    fun `detects mix of gitImplementation and localImplementation`() {
+        val file = buildFile("""
+            dependencies {
+                gitImplementation("https://github.com/square/retrofit", from = "2.9.0")
+                localImplementation("../my-library")
+                implementation("androidx.core:core-ktx:1.12.0")
+            }
+        """.trimIndent())
+
+        val gitDeps = BuildFileScanner.scanFile(file)
+        val localDeps = BuildFileScanner.scanFileForLocal(file)
+
+        assertEquals(1, gitDeps.size)
+        assertEquals(1, localDeps.size)
+        assertEquals("../my-library", localDeps[0].path)
+    }
+
+    @Test
+    fun `scanProjectForLocal walks directories`() {
+        val subDir = File(tempDir, "app").also { it.mkdirs() }
+        File(subDir, "build.gradle.kts").writeText("""
+            dependencies {
+                localImplementation("../some-lib")
+            }
+        """.trimIndent())
+
+        val deps = BuildFileScanner.scanProjectForLocal(tempDir)
+
+        assertEquals(1, deps.size)
+        assertEquals("../some-lib", deps[0].path)
+    }
+
     private fun buildFile(content: String): File {
         return File(tempDir, "build.gradle.kts").also { it.writeText(content) }
     }
