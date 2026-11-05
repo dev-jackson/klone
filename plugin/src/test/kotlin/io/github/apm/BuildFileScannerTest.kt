@@ -25,7 +25,7 @@ class BuildFileScannerTest {
 
         assertEquals(1, deps.size)
         assertEquals("https://github.com/square/retrofit", deps[0].url)
-        assertEquals(GitRef.Tag("2.9.0"), deps[0].ref)
+        assertEquals(GitRef.Range(">=2.9.0 <3.0.0"), deps[0].ref)
     }
 
     @Test
@@ -103,7 +103,7 @@ class BuildFileScannerTest {
 
         assertEquals(1, deps.size)
         assertEquals("https://github.com/square/retrofit", deps[0].url)
-        assertEquals(GitRef.Tag("2.9.0"), deps[0].ref)
+        assertEquals(GitRef.Range(">=2.9.0 <3.0.0"), deps[0].ref)
         assertEquals(listOf("converter-gson"), deps[0].submoduleNames)
     }
 
@@ -120,7 +120,7 @@ class BuildFileScannerTest {
 
         assertEquals(1, deps.size)
         assertEquals("https://github.com/square/retrofit", deps[0].url)
-        assertEquals(GitRef.Tag("2.9.0"), deps[0].ref)
+        assertEquals(GitRef.Range(">=2.9.0 <3.0.0"), deps[0].ref)
         assertEquals(listOf("converter-gson", "adapter-rxjava2"), deps[0].submoduleNames)
     }
 
@@ -182,7 +182,7 @@ class BuildFileScannerTest {
 
         assertEquals(1, deps.size)
         assertEquals("/path/to/lib", deps[0].path)
-        assertEquals("core", deps[0].moduleCoordinates)
+        assertEquals(listOf("core"), deps[0].submoduleNames)
     }
 
     @Test

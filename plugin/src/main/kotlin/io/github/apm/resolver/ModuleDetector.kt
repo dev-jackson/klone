@@ -12,49 +12,84 @@ object ModuleDetector {
 
     fun detect(repoDir: File, repoName: String): String? {
         val group = detectGroup(repoDir) ?: return null
-        val artifactId = detectArtifactId(repoDir) ?: repoName
+        val artifactId = publishedArtifactId(repoDir) ?: detectArtifactId(repoDir) ?: repoName
         return "$group:$artifactId"
     }
 
     fun detectAllSubmodules(repoDir: File): List<SubmoduleInfo> {
-        val includes = parseSettingsIncludes(repoDir)
+        val settings = readSettings(repoDir)
+        val includes = settings?.let { parseSettingsIncludes(it) }.orEmpty()
 
         if (includes.isEmpty()) {
             val coords = detect(repoDir, repoDir.name) ?: return emptyList()
             return listOf(SubmoduleInfo(":", coords, null))
         }
 
-        return includes.mapNotNull { projectPath ->
-            // Skip :app modules — they're sample/demo apps, not libraries
-            if (projectPath.substringAfterLast(':') == "app") return@mapNotNull null
-            val subDir = projectPathToDir(repoDir, projectPath)
+        val projectDirs = settings?.let { parseProjectDirs(it) }.orEmpty()
+        val modules = includes.mapNotNull { projectPath ->
+            val subDir = projectDirs[projectPath]?.let { File(repoDir, it) } ?: projectPathToDir(repoDir, projectPath)
+            // Skip sample/demo apps — they're not libraries
+            if (projectPath.substringAfterLast(':') == "app" || isApplication(subDir)) return@mapNotNull null
             val group = detectGroup(subDir) ?: detectGroup(repoDir) ?: return@mapNotNull null
-            val artifactId = projectPath.substringAfterLast(':')
-            SubmoduleInfo(
+            val published = publishedArtifactId(subDir)
+            val artifactId = published ?: projectPath.substringAfterLast(':')
+            Pair(published != null, SubmoduleInfo(
                 projectPath = projectPath,
                 coordinates = "$group:$artifactId",
                 moduleName = artifactId
-            )
+            ))
         }
+        // Repos that mark published modules (POM_ARTIFACT_ID, vanniktech/Square style): test helpers and samples are not libraries
+        return if (modules.any { it.first }) modules.filter { it.first }.map { it.second } else modules.map { it.second }
     }
 
-    private fun parseSettingsIncludes(repoDir: File): List<String> {
-        val settingsFile = File(repoDir, "settings.gradle.kts").takeIf { it.exists() }
-            ?: File(repoDir, "settings.gradle").takeIf { it.exists() }
-            ?: return emptyList()
+    /** Artifact id a module publishes under, when it says so explicitly. */
+    private fun publishedArtifactId(dir: File): String? {
+        File(dir, "gradle.properties").takeIf { it.isFile }?.let { props ->
+            Regex("""^\s*POM_ARTIFACT_ID\s*=\s*(\S+)""", RegexOption.MULTILINE).find(props.readText())?.let { return it.groupValues[1] }
+        }
+        val script = listOf("build.gradle.kts", "build.gradle").map { File(dir, it) }.firstOrNull { it.isFile }
+            ?.readText()?.let { ScriptParser.stripComments(it) } ?: return null
+        return listOf(
+            Regex("""archivesBaseName\s*=\s*["']([^"']+)["']"""),
+            Regex("""archivesName\s*(?:\.set\s*\(|=)\s*["']([^"']+)["']"""),
+            Regex("""artifactId\s*=\s*["']([^"']+)["']""")
+        ).firstNotNullOfOrNull { it.find(script)?.groupValues?.get(1) }
+    }
 
-        val content = settingsFile.readText()
+    private fun readSettings(repoDir: File): String? =
+        (File(repoDir, "settings.gradle.kts").takeIf { it.exists() }
+            ?: File(repoDir, "settings.gradle").takeIf { it.exists() })
+            ?.readText()?.let { ScriptParser.stripComments(it) }
+
+    /**
+     * `include(":a", ":b")` (also across lines), Groovy `include ':a', ':b'`, and paths
+     * without a leading colon (`include("a")`). Never matches `includeBuild`.
+     */
+    private fun parseSettingsIncludes(content: String): List<String> {
         val results = mutableListOf<String>()
-
-        // Capture each include(...) / include ... line, then extract all ":path" tokens from it
-        Regex("""include\b[^\n;]*""").findAll(content).forEach { includeLine ->
-            Regex("""["'](:[^"'\s,)]+)["']""").findAll(includeLine.value).forEach { pathMatch ->
-                results.add(pathMatch.groupValues[1])
-            }
+        ScriptParser.findCalls(content, setOf("include")).forEach { call ->
+            call.args.mapNotNullTo(results) { ScriptParser.stringLiteral(it.expr) }
         }
-
-        return results.distinct()
+        Regex("""(?<![\w.])include[ \t]+(['"][^\n;]*)""").findAll(content).forEach { line ->
+            ScriptParser.splitArgs(line.groupValues[1]).mapNotNullTo(results) { ScriptParser.stringLiteral(it.expr) }
+        }
+        return results.map { if (it.startsWith(":")) it else ":$it" }.distinct()
     }
+
+    /** `project(":x").projectDir = file("libs/x")` remappings. */
+    private fun parseProjectDirs(content: String): Map<String, String> =
+        Regex("""project\(\s*["'](:?[^"']+)["']\s*\)\.projectDir\s*=\s*(?:file|File)\(\s*["']([^"']+)["']""")
+            .findAll(content)
+            .associate { m -> m.groupValues[1].let { if (it.startsWith(":")) it else ":$it" } to m.groupValues[2] }
+
+    private fun isApplication(dir: File): Boolean =
+        listOf("build.gradle.kts", "build.gradle").map { File(dir, it) }.filter { it.exists() }.any { file ->
+            val text = file.readText()
+            text.contains("com.android.application") || text.contains("android.application") ||
+                Regex("""(?<![\w.])id\s*\(?\s*["']application["']""").containsMatchIn(text) ||
+                Regex("""plugins\s*\{[^}]*(?<![\w."-])application(?![\w"-])""").containsMatchIn(text)
+        }
 
     private fun projectPathToDir(repoDir: File, projectPath: String): File {
         // ":converter-gson" -> "converter-gson"
@@ -67,7 +102,8 @@ object ModuleDetector {
         // 1. gradle.properties — simple and explicit
         val gradleProps = File(repoDir, "gradle.properties")
         if (gradleProps.exists()) {
-            val match = Regex("""^\s*group\s*=\s*(\S+)""", RegexOption.MULTILINE)
+            // `group=` or the vanniktech/Square convention `GROUP=`
+            val match = Regex("""^\s*(?:group|GROUP)\s*=\s*(\S+)""", RegexOption.MULTILINE)
                 .find(gradleProps.readText())
             if (match != null) return match.groupValues[1].trim()
         }

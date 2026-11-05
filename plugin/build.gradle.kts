@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "io.github.dev-jackson"
-version = "1.1.8"
+version = "2.0.0-beta1"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -22,10 +22,23 @@ java {
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        // Build scripts are compiled by the Kotlin embedded in the user's Gradle; older Gradle
+        // versions cannot read newer Kotlin metadata, so target the oldest supported line.
+        apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_8)
+        languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_8)
     }
 }
 
+val functionalTest: SourceSet by sourceSets.creating
+
+configurations[functionalTest.implementationConfigurationName].extendsFrom(configurations.testImplementation.get())
+configurations[functionalTest.runtimeOnlyConfigurationName].extendsFrom(configurations.testRuntimeOnly.get())
+// Scenarios also call Klone classes directly (GitResolver against real remotes)
+functionalTest.compileClasspath += sourceSets.main.get().output + configurations.compileClasspath.get()
+functionalTest.runtimeClasspath += sourceSets.main.get().output + configurations.runtimeClasspath.get()
+
 gradlePlugin {
+    testSourceSets(functionalTest)
     website = "https://github.com/dev-jackson/klone"
     vcsUrl = "https://github.com/dev-jackson/klone"
 
@@ -95,6 +108,7 @@ repositories {
 dependencies {
     compileOnly(gradleApi())
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.tomlj)
 
     testImplementation(gradleTestKit())
     testImplementation(libs.junit.jupiter)
@@ -104,4 +118,30 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+// End-to-end scenarios: real Gradle builds (TestKit) against local git repos and a fake private Maven repo
+val functionalTestTask = tasks.register<Test>("functionalTest") {
+    description = "Runs end-to-end scenarios against emulated projects."
+    group = "verification"
+    testClassesDirs = functionalTest.output.classesDirs
+    classpath = functionalTest.runtimeClasspath
+    useJUnitPlatform()
+    shouldRunAfter(tasks.test)
+    // -PtestGradleVersion=8.4 runs the scenarios against another Gradle (compatibility matrix)
+    providers.gradleProperty("testGradleVersion").orNull?.let { systemProperty("klone.test.gradleVersion", it) }
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
+    testLogging { events("passed", "failed", "skipped"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
+}
+
+tasks.check { dependsOn(functionalTestTask) }
+
+// Generates a hands-on playground (host app + local git repos) in build/playground
+tasks.register<JavaExec>("generatePlayground") {
+    description = "Generates a playground host project wired to local git repos."
+    group = "verification"
+    classpath = functionalTest.runtimeClasspath
+    mainClass.set("dev.klone.fixtures.PlaygroundKt")
+    args(layout.buildDirectory.dir("playground").get().asFile.absolutePath)
+    dependsOn(tasks.named("pluginUnderTestMetadata"))
 }

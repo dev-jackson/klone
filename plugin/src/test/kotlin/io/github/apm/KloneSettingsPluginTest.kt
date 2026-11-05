@@ -1,5 +1,6 @@
 package dev.klone
 
+import dev.klone.composite.HostPropagation
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -9,8 +10,6 @@ import java.io.File
 
 class KloneSettingsPluginTest {
 
-    private val plugin = KloneSettingsPlugin()
-
     @TempDir
     lateinit var tempDir: File
 
@@ -18,13 +17,13 @@ class KloneSettingsPluginTest {
 
     @Test
     fun `readSdkDirFromHost returns null when host local properties missing`() {
-        assertNull(plugin.readSdkDirFromHost(tempDir))
+        assertNull(HostPropagation.readSdkDirFromHost(tempDir))
     }
 
     @Test
     fun `readSdkDirFromHost returns sdk dir line from host`() {
         File(tempDir, "local.properties").writeText("sdk.dir=/Users/alice/Library/Android/sdk\n")
-        assertEquals("sdk.dir=/Users/alice/Library/Android/sdk", plugin.readSdkDirFromHost(tempDir))
+        assertEquals("sdk.dir=/Users/alice/Library/Android/sdk", HostPropagation.readSdkDirFromHost(tempDir))
     }
 
     // ── injectSdkDir ───────────────────────────────────────────────────────
@@ -36,7 +35,7 @@ class KloneSettingsPluginTest {
 
         File(hostDir, "local.properties").writeText("sdk.dir=/opt/android-sdk\n")
 
-        plugin.injectSdkDir(clonedDir, hostDir)
+        HostPropagation.injectSdkDir(clonedDir, hostDir)
 
         val result = File(clonedDir, "local.properties").readText()
         assertTrue(result.contains("sdk.dir=/opt/android-sdk"), "Expected sdk.dir in created file")
@@ -50,7 +49,7 @@ class KloneSettingsPluginTest {
         File(hostDir, "local.properties").writeText("sdk.dir=/opt/android-sdk\n")
         File(clonedDir, "local.properties").writeText("# existing content\n")
 
-        plugin.injectSdkDir(clonedDir, hostDir)
+        HostPropagation.injectSdkDir(clonedDir, hostDir)
 
         val result = File(clonedDir, "local.properties").readText()
         assertTrue(result.contains("# existing content"), "Existing content should be preserved")
@@ -65,7 +64,7 @@ class KloneSettingsPluginTest {
         File(hostDir, "local.properties").writeText("sdk.dir=/host/android-sdk\n")
         File(clonedDir, "local.properties").writeText("sdk.dir=/cloned/android-sdk\n")
 
-        plugin.injectSdkDir(clonedDir, hostDir)
+        HostPropagation.injectSdkDir(clonedDir, hostDir)
 
         val result = File(clonedDir, "local.properties").readText()
         assertTrue(result.contains("sdk.dir=/cloned/android-sdk"), "Original sdk.dir should be untouched")
@@ -79,7 +78,7 @@ class KloneSettingsPluginTest {
 
         // No local.properties in hostDir
 
-        plugin.injectSdkDir(clonedDir, hostDir)
+        HostPropagation.injectSdkDir(clonedDir, hostDir)
 
         assertTrue(!File(clonedDir, "local.properties").exists(), "No file should be created when host has no local.properties")
     }
@@ -93,7 +92,7 @@ class KloneSettingsPluginTest {
 
         File(hostDir, "gradle.properties").writeText("myKey=myValue\norg.gradle.jvmargs=-Xmx2g\n")
 
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         val result = File(clonedDir, "gradle.properties").readText()
         assertTrue(result.contains("myKey=myValue"), "Expected myKey propagated")
@@ -101,18 +100,39 @@ class KloneSettingsPluginTest {
     }
 
     @Test
-    fun `injectGradleProperties merges multiple properties files from host root`() {
+    fun `injectGradleProperties copies gradle properties only, without secrets`() {
         val hostDir = File(tempDir, "host").also { it.mkdirs() }
         val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
 
-        File(hostDir, "gradle.properties").writeText("keyA=valueA\n")
+        File(hostDir, "gradle.properties").writeText(
+            "keyA=valueA\nandroid.useAndroidX=true\nartifactoryPassword=s3cr3t\nGITHUB_TOKEN=ghp_x\nsigning.keyId=ABC\n"
+        )
         File(hostDir, "credentials.properties").writeText("keyB=valueB\n")
+        File(hostDir, "keystore.properties").writeText("storePassword=x\n")
 
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         val result = File(clonedDir, "gradle.properties").readText()
-        assertTrue(result.contains("keyA=valueA"), "Expected keyA from gradle.properties")
-        assertTrue(result.contains("keyB=valueB"), "Expected keyB from credentials.properties")
+        assertTrue(result.contains("keyA=valueA") && result.contains("android.useAndroidX=true"))
+        listOf("keyB", "s3cr3t", "ghp_x", "signing.keyId", "storePassword").forEach {
+            assertTrue(!result.contains(it), "$it must not be copied into the cache")
+        }
+    }
+
+    @Test
+    fun `injectGradleProperties copies explicitly allowed keys from any root properties file`() {
+        val hostDir = File(tempDir, "host").also { it.mkdirs() }
+        val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
+
+        File(hostDir, "gradle.properties").writeText("artifactoryPassword=s3cr3t\n")
+        File(hostDir, "credentials.properties").writeText("artifactoryUser=ci\nother=x\n")
+        File(hostDir, "local.properties").writeText("artifactoryLocal=nope\n")
+
+        HostPropagation.injectGradleProperties(clonedDir, hostDir, listOf("artifactory*"))
+
+        val result = File(clonedDir, "gradle.properties").readText()
+        assertTrue(result.contains("artifactoryPassword=s3cr3t") && result.contains("artifactoryUser=ci"), result)
+        assertTrue(!result.contains("other=x") && !result.contains("artifactoryLocal"), result)
     }
 
     @Test
@@ -123,7 +143,7 @@ class KloneSettingsPluginTest {
         File(hostDir, "gradle.properties").writeText("sharedKey=hostValue\nnewKey=newValue\n")
         File(clonedDir, "gradle.properties").writeText("sharedKey=clonedValue\n")
 
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         val result = File(clonedDir, "gradle.properties").readText()
         assertTrue(result.contains("sharedKey=clonedValue"), "Existing key must not be overwritten")
@@ -138,7 +158,7 @@ class KloneSettingsPluginTest {
 
         // No *.properties files in hostDir
 
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         assertTrue(!File(clonedDir, "gradle.properties").exists(), "No file should be created when host has no properties")
     }
@@ -151,7 +171,7 @@ class KloneSettingsPluginTest {
         File(hostDir, "gradle.properties").writeText("injectedKey=injectedValue\n")
         File(clonedDir, "gradle.properties").writeText("# existing content\nexistingKey=existingValue\n")
 
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         val result = File(clonedDir, "gradle.properties").readText()
         assertTrue(result.contains("# existing content"), "Existing content must be preserved")
@@ -165,19 +185,19 @@ class KloneSettingsPluginTest {
         val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
 
         // First run
-        File(hostDir, "gradle.properties").writeText("token=old-token\n")
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        File(hostDir, "gradle.properties").writeText("endpoint=https://old.example.com\n")
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         val afterFirst = File(clonedDir, "gradle.properties").readText()
-        assertTrue(afterFirst.contains("token=old-token"), "Token should be injected on first run")
+        assertTrue(afterFirst.contains("endpoint=https://old.example.com"), "Value should be injected on first run")
 
-        // Second run — token rotated
-        File(hostDir, "gradle.properties").writeText("token=new-token\n")
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        // Second run — value changed
+        File(hostDir, "gradle.properties").writeText("endpoint=https://new.example.com\n")
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         val afterSecond = File(clonedDir, "gradle.properties").readText()
-        assertTrue(afterSecond.contains("token=new-token"), "Token should be updated on second run")
-        assertTrue(!afterSecond.contains("token=old-token"), "Old token must not remain after rotation")
+        assertTrue(afterSecond.contains("endpoint=https://new.example.com"), "Value should be updated on second run")
+        assertTrue(!afterSecond.contains("endpoint=https://old.example.com"), "Old value must not remain after a change")
     }
 
     // ── writeSettingsSentinel ────────────────────────────────────────────
@@ -197,7 +217,7 @@ dependencyResolutionManagement {
 }
 // </klone-repos>"""
 
-        KloneSettingsPlugin.writeSettingsSentinel(file, sentinelBlock)
+        HostPropagation.writeSettingsSentinel(file, sentinelBlock)
 
         val result = file.readText()
         assertTrue(result.contains("// <klone-repos>"), "Sentinel start should be present")
@@ -221,7 +241,7 @@ dependencyResolutionManagement {
 }
 // </klone-repos>"""
 
-        KloneSettingsPlugin.writeSettingsSentinel(file, oldBlock)
+        HostPropagation.writeSettingsSentinel(file, oldBlock)
 
         val newBlock = """// <klone-repos>
 dependencyResolutionManagement {
@@ -233,7 +253,7 @@ dependencyResolutionManagement {
 }
 // </klone-repos>"""
 
-        KloneSettingsPlugin.writeSettingsSentinel(file, newBlock)
+        HostPropagation.writeSettingsSentinel(file, newBlock)
 
         val result = file.readText()
         assertTrue(result.contains("https://new.private.com/maven"), "New URL should be present")
@@ -259,7 +279,7 @@ dependencyResolutionManagement {
 }
 // </klone-repos>"""
 
-        KloneSettingsPlugin.writeSettingsSentinel(file, sentinelBlock)
+        HostPropagation.writeSettingsSentinel(file, sentinelBlock)
 
         val result = file.readText()
         assertTrue(result.contains("rootProject.name = \"mylib\""), "Root project name must be preserved")
@@ -286,7 +306,7 @@ dependencyResolutionManagement {
 }
 // </klone-repos>"""
 
-        KloneSettingsPlugin.writeSettingsSentinel(file, sentinelBlock)
+        HostPropagation.writeSettingsSentinel(file, sentinelBlock)
 
         val result = file.readText()
         assertTrue(result.contains("credentials"), "Credentials block should be present")
@@ -298,43 +318,6 @@ dependencyResolutionManagement {
     // ── extractMavenBlocks ──────────────────────────────────────────────
 
     @Test
-    fun `extractMavenBlocks extracts simple and nested blocks`() {
-        val content = """
-            repositories {
-                google()
-                maven { url = uri("https://simple.com/repo") }
-                maven {
-                    url = uri("https://complex.com/repo")
-                    credentials {
-                        username = "user"
-                        password = "pass"
-                    }
-                }
-            }
-        """.trimIndent()
-
-        val blocks = plugin.extractMavenBlocks(content)
-        assertEquals(2, blocks.size, "Should find 2 maven blocks")
-        assertTrue(blocks[0].contains("https://simple.com/repo"))
-        assertTrue(blocks[1].contains("credentials"))
-        assertTrue(blocks[1].contains("https://complex.com/repo"))
-    }
-
-    @Test
-    fun `extractUrlFromMavenBlock extracts url with uri wrapper`() {
-        val block = """maven { url = uri("https://example.com/repo") }"""
-        assertEquals("https://example.com/repo", plugin.extractUrlFromMavenBlock(block))
-    }
-
-    @Test
-    fun `extractUrlFromMavenBlock extracts url without uri wrapper`() {
-        val block = """maven { url = "https://example.com/repo" }"""
-        assertEquals("https://example.com/repo", plugin.extractUrlFromMavenBlock(block))
-    }
-
-    // ── injectGradleProperties (continued) ──────────────────────────────
-
-    @Test
     fun `injectGradleProperties preserves original cloned keys across sentinel block replacement`() {
         val hostDir = File(tempDir, "host").also { it.mkdirs() }
         val clonedDir = File(tempDir, "cloned").also { it.mkdirs() }
@@ -343,11 +326,11 @@ dependencyResolutionManagement {
         File(clonedDir, "gradle.properties").writeText("clonedOriginal=unchanged\n")
 
         // First run injects hostKey
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         // Second run with changed host value
         File(hostDir, "gradle.properties").writeText("hostKey=value2\n")
-        plugin.injectGradleProperties(clonedDir, hostDir)
+        HostPropagation.injectGradleProperties(clonedDir, hostDir)
 
         val result = File(clonedDir, "gradle.properties").readText()
         assertTrue(result.contains("clonedOriginal=unchanged"), "Original cloned key must be preserved")

@@ -5,10 +5,12 @@ gradle-publish-plugin = "1.3.0"
 vanniktech-publish = "0.30.0"
 junit = "5.11.3"
 mockk = "1.13.13"
+tomlj = "1.1.1"
 
 [libraries]
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit" }
+tomlj = { group = "org.tomlj", name = "tomlj", version.ref = "tomlj" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 
 [plugins]
