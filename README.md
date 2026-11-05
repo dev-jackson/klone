@@ -353,6 +353,8 @@ Override the location (first match wins): `KLONE_CACHE_DIR` env var, `klone { ca
 ./gradlew kloneClean --all               # delete the whole Klone cache
 ```
 
+On Windows, Gradle's file watching keeps the current build's checkouts open: add `--no-watch-fs` (or run `./gradlew --stop` first) when cleaning them.
+
 ---
 
 ## CI/CD

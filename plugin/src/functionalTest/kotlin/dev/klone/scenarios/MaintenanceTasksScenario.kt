@@ -39,14 +39,14 @@ class MaintenanceTasksScenario : Scenario() {
         val checkouts = { cacheDir.walkTopDown().filter { File(it, ".git").isDirectory }.toList() }
         // A checkout another project used long ago; repos this build uses are always fresh
         val stale = File(cacheDir, "github.com/old/project").also { File(it, ".git").mkdirs(); File(it, ".git/klone-last-used").writeText("0") }
-        val unused = host.build("kloneClean", "--unused-days=30").output
+        val unused = host.build("kloneClean", "--unused-days=30", "--no-watch-fs").output
         assertTrue(unused.contains("Deleted ${stale.absolutePath}"), unused)
         assertEquals(2, checkouts().size, "repos used by this build are kept")
 
-        host.build("kloneClean")
+        host.build("kloneClean", "--no-watch-fs")
         assertTrue(checkouts().isEmpty())
         host.runApp()
-        host.build("kloneClean", "--all")
+        host.build("kloneClean", "--all", "--no-watch-fs")
         assertFalse(cacheDir.exists())
     }
 }

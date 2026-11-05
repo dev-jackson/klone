@@ -140,11 +140,19 @@ abstract class KloneCleanTask : DefaultTask() {
             }
             else -> repos.get().map { File(KloneTasks.ResolvedRepo.decode(it).localDir) }
         }
+        val failed = mutableListOf<File>()
         targets.filter { it.exists() }.forEach { dir ->
-            dir.deleteTree()
-            File(dir.parentFile, "${dir.name}.lock").delete()
-            logger.lifecycle("Deleted ${dir.absolutePath}")
+            if (dir.deleteTree()) {
+                File(dir.parentFile, "${dir.name}.lock").delete()
+                logger.lifecycle("Deleted ${dir.absolutePath}")
+            } else {
+                failed += dir.walkTopDown().filter { it.exists() }.take(5)
+            }
         }
+        if (failed.isNotEmpty()) throw org.gradle.api.GradleException(
+            "[Klone] Could not delete (files in use): ${failed.joinToString { it.absolutePath }}\n" +
+                "On Windows, Gradle's file watching keeps included builds open: run with --no-watch-fs, or ./gradlew --stop first."
+        )
         if (targets.none()) logger.lifecycle("Nothing to clean.")
     }
 

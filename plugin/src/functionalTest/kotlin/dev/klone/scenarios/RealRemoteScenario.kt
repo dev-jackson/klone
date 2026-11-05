@@ -82,9 +82,10 @@ class RealRemoteScenario : Scenario() {
 
     @Test
     fun `private repo over ssh`() {
-        val url = System.getenv("KLONE_TEST_SSH_URL")
+        // CI passes unset secrets as empty strings
+        val url = System.getenv("KLONE_TEST_SSH_URL")?.takeIf { it.isNotBlank() }
         assumeTrue(url != null, "set KLONE_TEST_SSH_URL=git@host:org/private-lib.git to run")
-        val tag = System.getenv("KLONE_TEST_SSH_TAG")
+        val tag = System.getenv("KLONE_TEST_SSH_TAG")?.takeIf { it.isNotBlank() }
         val ref = tag?.let { GitRef.Tag(it) } ?: GitRef.Default
         val resolved = GitResolver(cacheDir).resolve(GitDependency(url!!, ref))
         val expected = if (tag != null) tagCommit(url, tag) else lsRemote(url, "HEAD").single().second

@@ -11,7 +11,9 @@ import java.io.File
 /** Klone's cache living alongside Gradle's: cleared with it, refreshed with it, and edits never lost. */
 class CacheScenario : Scenario() {
 
-    private val gradleHome get() = File(tempDir, "gradle-home")
+    // Outside @TempDir: on Windows the TestKit daemon keeps its Gradle home open after the test
+    private val homes = File(System.getProperty("java.io.tmpdir"), "klone-test-gradle-homes/${java.util.UUID.randomUUID()}")
+    private val gradleHome get() = File(homes, "gradle-home")
     private val defaultCache get() = File(gradleHome, "caches/klone")
 
     private fun hostInGradleHome(dependency: String, name: String = "host") =
@@ -34,7 +36,7 @@ class CacheScenario : Scenario() {
 
         // Brand-new Gradle home (new machine / CI runner without cache): still the locked commit
         val fresh = host("host", Projects.host(dependencies = """gitImplementation("${lib.url}", branch = "main")""",
-            prints = listOf("Greeter.version()"), imports = listOf("com.example.Greeter")), cacheDir = null, testKitDir = File(tempDir, "fresh-home"))
+            prints = listOf("Greeter.version()"), imports = listOf("com.example.Greeter")), cacheDir = null, testKitDir = File(homes, "fresh-home"))
         assertEquals(listOf("main-1"), fresh.runApp())
     }
 
