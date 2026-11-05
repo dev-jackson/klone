@@ -19,7 +19,7 @@ pluginManagement {
 }
 
 plugins {
-    id("io.github.dev-jackson.klone") version "1.1.6"
+    id("io.github.dev-jackson.klone") version "2.0.0-beta1"
 }
 
 rootProject.name = "my-app"
@@ -36,8 +36,11 @@ plugins {
 }
 
 dependencies {
-    // Full repo — all submodules auto-detected
+    // Full repo — all submodules auto-detected; SPM-style: 2.9.0 up to next major
     gitImplementation("https://github.com/square/retrofit", from = "2.9.0")
+
+    // Exact version
+    gitImplementation("https://github.com/square/retrofit", exact = "2.9.0")
 
     // Single specific submodule
     gitImplementation("https://github.com/square/retrofit", module = "converter-gson", from = "2.9.0")
@@ -60,12 +63,28 @@ dependencies {
 
 ---
 
+## Version catalogs
+
+Declare libraries normally in `gradle/libs.versions.toml` and add their source under `[metadata]`:
+
+```toml
+[libraries]
+retrofit = { module = "com.squareup.retrofit2:retrofit", version = "2.9.0" }
+
+[metadata]
+klone.retrofit = "https://github.com/square/retrofit"
+```
+
+Then use `implementation(libs.retrofit)`. See the main README for all keys, SPM-style versions (`from`, `exact`, `upToNextMinor`, ranges), `-Pklone.frozen`, cache and maintenance tasks.
+
+---
+
 ## How It Works
 
 ```
 settings phase
   └─ Klone scans all build.gradle.kts files for gitImplementation() calls
-  └─ Clones / fetches each repo into ~/.klone/packages/<host>/<user>/<repo>/
+  └─ Clones / fetches each repo into ~/.gradle/caches/klone/<host>/<user>/<repo>/
   └─ Reads the repo's settings.gradle.kts to discover submodules (include(":x"))
   └─ Registers one includeBuild per repo URL with N dependency substitution rules
   └─ Writes klone.resolved lock file
@@ -135,16 +154,18 @@ Klone writes `klone.resolved` to your project root after every resolution. **Com
 
 ## Cache
 
-Repos are cached at `~/.klone/packages/<host>/<user>/<repo>/`.
+Repos are cached at `~/.gradle/caches/klone/<host>/<user>/<repo>/`.
 Override with the `KLONE_CACHE_DIR` environment variable.
 
 ---
 
 ## Requirements
 
-- Gradle 7.0+
-- Android Gradle Plugin 7.0+
+- Gradle 7.6+ (CI runs the scenarios on 7.6, 8.0, 8.10, 8.14 and 9.8)
 - Java 17+
+- git on `PATH`
+- Android Gradle Plugin: whatever your Gradle supports; the end-to-end Android scenario uses AGP 8.7. A cloned library should use the same AGP/Kotlin line as your app (Klone warns otherwise)
+- Linux, macOS and Windows (all three in CI)
 - The library must have its own Gradle build file (`build.gradle.kts` or `build.gradle`)
 
 ---

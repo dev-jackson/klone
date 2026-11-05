@@ -1,7 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
-    id("dev.klone.project")
+    id("io.github.dev-jackson.klone.project")
 }
 
 android {
@@ -29,8 +29,8 @@ android {
 }
 
 dependencies {
-    gitImplementation("https://github.com/square/retrofit", from = "2.9.0")
-    gitImplementation("https://github.com/square/okhttp", from = "4.12.0")
+    implementation(libs.retrofit)
+    implementation(libs.okhttp)
 
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")

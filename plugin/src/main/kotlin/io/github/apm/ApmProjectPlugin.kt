@@ -1,9 +1,9 @@
 package dev.klone
 
+import org.gradle.api.GradleException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.artifacts.dsl.DependencyHandler
-import org.gradle.api.logging.Logging
 import java.io.File
 
 /**
@@ -41,84 +41,64 @@ class KloneProjectPlugin : Plugin<Project> {
 fun DependencyHandler.localImplementation(
     path: String,
     module: String? = null,
-    modules: List<String>? = null
+    modules: List<String>? = null,
+    configuration: String = "implementation"
 ) {
-    val logger = Logging.getLogger("Klone")
-
-    val canonicalPath = File(path).let {
-        if (it.isAbsolute) it.canonicalPath else File(path).canonicalPath
-    }
-    val registryKey = "local:$canonicalPath"
-
-    val requestedModuleNames: List<String?>? = when {
-        module != null -> listOf(module)
-        modules != null -> modules
-        else -> null
-    }
-
-    val moduleNames: List<String?> = if (requestedModuleNames != null) {
-        requestedModuleNames
-    } else {
-        val all = KloneRegistry.allModulesFor(registryKey)
-        if (all.isEmpty()) listOf(null) else all
-    }
-
-    for (modName in moduleNames) {
-        val entry = KloneRegistry.find(registryKey, modName)
-        if (entry == null) {
-            logger.warn("[Klone] Local module not found in registry: $registryKey#${modName ?: "root"}\n" +
-                "Make sure the Klone settings plugin (dev.klone) is applied in settings.gradle.kts.")
-            continue
-        }
-
-        val coords = entry.moduleCoordinates
-        if (coords == null) {
-            logger.warn("[Klone] Could not detect module coordinates for local path $path — skipping substitution.")
-            continue
-        }
-
-        add("implementation", coords)
-    }
+    val dir = KloneRegistry.resolveLocalDir(path, KloneRegistry.rootDir ?: File(path).absoluteFile.parentFile)
+    addFromRegistry(KloneRegistry.localKey(dir), path, module, modules, version = null, configuration)
 }
 
+/**
+ * SPM-style git dependency. Pick one ref:
+ *   from = "1.4.0"            up to next major (>=1.4.0 <2.0.0)
+ *   exact = "1.4.0"           that version only
+ *   upToNextMinor = "1.4.0"   >=1.4.0 <1.5.0
+ *   version = "^1.4"          any range (npm, Gradle `1.+`, Maven `[1.0,2.0)`)
+ *   tag / branch / commit     a literal git ref
+ * The settings plugin reads these from source; at this point they only document the call.
+ */
+@Suppress("UNUSED_PARAMETER")
 fun DependencyHandler.gitImplementation(
     url: String,
     from: String? = null,
     branch: String? = null,
     commit: String? = null,
     module: String? = null,
-    modules: List<String>? = null
+    modules: List<String>? = null,
+    exact: String? = null,
+    upToNextMinor: String? = null,
+    version: String? = null,
+    tag: String? = null,
+    tagPattern: String? = null,
+    dir: String? = null,
+    configuration: String = "implementation"
 ) {
-    val logger = Logging.getLogger("Klone")
+    // Only exact versions belong in the notation; the composite build substitutes it anyway
+    addFromRegistry(url, url, module, modules, version = exact ?: tag, configuration)
+}
 
-    val requestedModuleNames: List<String?>? = when {
+private fun DependencyHandler.addFromRegistry(
+    key: String,
+    label: String,
+    module: String?,
+    modules: List<String>?,
+    version: String?,
+    configuration: String
+) {
+    val moduleNames: List<String?> = when {
         module != null -> listOf(module)
         modules != null -> modules
-        else -> null
-    }
-
-    val moduleNames: List<String?> = if (requestedModuleNames != null) {
-        requestedModuleNames
-    } else {
-        val all = KloneRegistry.allModulesFor(url)
-        if (all.isEmpty()) listOf(null) else all
+        else -> KloneRegistry.allModulesFor(key).ifEmpty { listOf(null) }
     }
 
     for (modName in moduleNames) {
-        val entry = KloneRegistry.find(url, modName)
-        if (entry == null) {
-            logger.warn("[Klone] Module not found in registry: $url#${modName ?: "root"}\n" +
-                "Make sure the Klone settings plugin (dev.klone) is applied in settings.gradle.kts.")
-            continue
-        }
-
-        val coords = entry.moduleCoordinates
-        if (coords == null) {
-            logger.warn("[Klone] Could not detect module coordinates for $url — skipping substitution.")
-            continue
-        }
-
-        val notation = if (from != null && !coords.contains(":$from")) "$coords:$from" else coords
-        add("implementation", notation)
+        val coords = KloneRegistry.find(key, modName)?.moduleCoordinates ?: throw GradleException(
+            "[Klone] $label#${modName ?: "root"} was not resolved in the settings phase.\n" +
+                "- Apply id(\"io.github.dev-jackson.klone\") in settings.gradle.kts\n" +
+                "- Use string literals or libs.versions.* (variables can't be read before configuration)\n" +
+                "- Or declare it in gradle/libs.versions.toml under [metadata] klone.<alias>"
+        )
+        // The composite build substitutes any version; it only documents the tag
+        add(configuration, if (version != null && coords.count { it == ':' } == 1) "$coords:$version" else coords)
     }
 }

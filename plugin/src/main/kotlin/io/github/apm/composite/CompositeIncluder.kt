@@ -1,6 +1,5 @@
 package dev.klone.composite
 
-import dev.klone.model.GitDependency
 import org.gradle.api.Action
 import org.gradle.api.initialization.ConfigurableIncludedBuild
 import org.gradle.api.initialization.Settings
@@ -13,22 +12,10 @@ object CompositeIncluder {
         val projectPath: String   // e.g. ":converter-gson" or ":" for root
     )
 
-    fun include(settings: Settings, dep: GitDependency, localDir: File, resolvedModule: String?) {
-        val moduleCoordinates = dep.moduleCoordinates ?: resolvedModule
-
-        if (moduleCoordinates != null) {
-            settings.includeBuild(localDir.absolutePath, Action { build: ConfigurableIncludedBuild ->
-                build.dependencySubstitution { subs ->
-                    subs.substitute(subs.module(moduleCoordinates)).using(subs.project(":"))
-                }
-            })
-        } else {
-            settings.includeBuild(localDir.absolutePath)
-        }
-    }
-
-    fun includeAll(settings: Settings, localDir: File, substitutions: List<ModuleSubstitution>) {
+    /** @param buildName unique name; defaults to the directory name (two repos named `utils` would collide). */
+    fun includeAll(settings: Settings, localDir: File, substitutions: List<ModuleSubstitution>, buildName: String? = null) {
         settings.includeBuild(localDir.absolutePath, Action { build: ConfigurableIncludedBuild ->
+            if (buildName != null) build.name = buildName
             if (substitutions.isNotEmpty()) {
                 build.dependencySubstitution { subs ->
                     for (s in substitutions) {

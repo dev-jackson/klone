@@ -1,18 +1,28 @@
 package dev.klone
 
 import dev.klone.composite.CompositeIncluder
+import dev.klone.composite.HostPropagation
 import dev.klone.model.GitDependency
 import dev.klone.model.LocalDependency
+import dev.klone.model.ModuleSelection
+import dev.klone.model.gitUrlKey
 import dev.klone.resolver.BuildFileScanner
-import dev.klone.resolver.GitResolver
+import dev.klone.resolver.GitResolveValueSource
+import dev.klone.resolver.KloneGitException
 import dev.klone.resolver.LockFileManager
 import dev.klone.resolver.ModuleDetector
+import dev.klone.resolver.PluginVersions
+import dev.klone.tasks.KloneTasks
+import dev.klone.resolver.ModuleDetector.SubmoduleInfo
 import dev.klone.resolver.toLockEntry
+import dev.klone.toml.KloneCatalog
+import dev.klone.toml.VersionCatalogReader
+import org.gradle.api.GradleException
 import org.gradle.api.Plugin
-import org.gradle.api.artifacts.repositories.MavenArtifactRepository
 import org.gradle.api.initialization.Settings
 import org.gradle.api.logging.Logging
 import java.io.File
+import java.net.URI
 
 class KloneSettingsPlugin : Plugin<Settings> {
 
@@ -20,385 +30,222 @@ class KloneSettingsPlugin : Plugin<Settings> {
 
     override fun apply(settings: Settings) {
         val extension = settings.extensions.create("klone", KloneSettingsExtension::class.java)
-
-        settings.gradle.settingsEvaluated {
-            val cacheDir = resolveCacheDir()
-            val resolver = GitResolver(cacheDir)
-            val lockManager = LockFileManager(settings.rootDir)
-            val lockEntries = mutableListOf<LockFileManager.LockEntry>()
-
-            val scanned = BuildFileScanner.scanProject(settings.rootDir)
-            val explicit = extension.dependencies
-            val allDeps = mergeUnique(scanned, explicit)
-
-            if (allDeps.isEmpty()) return@settingsEvaluated
-
-            logger.lifecycle("[Klone] Resolving ${allDeps.size} git dependency declaration(s)...")
-
-            // Group by URL — one clone and one includeBuild per URL
-            val depsByUrl = allDeps.groupBy { it.url }
-
-            for ((url, urlDeps) in depsByUrl) {
-                logger.lifecycle("[Klone] Resolving $url (${urlDeps.first().ref.describe()})")
-
-                val resolved = try {
-                    resolver.resolve(urlDeps.first())
-                } catch (e: Exception) {
-                    logger.error("[Klone] Failed to resolve $url: ${e.message}")
-                    throw e
-                }
-
-                logger.lifecycle("[Klone] Downloaded ${resolved.localDir.name} @ ${resolved.commitHash.take(8)}")
-
-                injectSdkDir(resolved.localDir, settings.rootDir)
-                injectGradleProperties(resolved.localDir, settings.rootDir)
-                injectHostRepositories(resolved.localDir, settings)
-
-                val extraRepos = ModuleDetector.extractMavenUrls(resolved.localDir)
-                if (extraRepos.isNotEmpty()) {
-                    logger.lifecycle("[Klone] Propagating ${extraRepos.size} repository(ies) from ${resolved.localDir.name}")
-                    settings.dependencyResolutionManagement.repositories { handler ->
-                        for (url in extraRepos) {
-                            handler.maven { repo -> repo.url = java.net.URI(url) }
-                        }
-                    }
-                }
-
-                val allSubmodules = ModuleDetector.detectAllSubmodules(resolved.localDir)
-
-                when {
-                    allSubmodules.isEmpty() ->
-                        logger.warn("[Klone] No modules detected in ${resolved.localDir.name} — check that build.gradle.kts and settings.gradle.kts exist")
-                    allSubmodules.size == 1 && allSubmodules[0].moduleName == null ->
-                        logger.lifecycle("[Klone] ${resolved.localDir.name}: single-module (${allSubmodules[0].coordinates})")
-                    else ->
-                        logger.lifecycle("[Klone] ${resolved.localDir.name}: ${allSubmodules.size} modules detected — ${allSubmodules.map { it.moduleName ?: "root" }}")
-                }
-                val substitutions = mutableListOf<CompositeIncluder.ModuleSubstitution>()
-
-                for (dep in urlDeps) {
-                    // Explicit Maven coordinates override auto-detection
-                    if (dep.moduleCoordinates != null) {
-                        KloneRegistry.register(dep.url, null, KloneRegistry.Entry(
-                            url = dep.url,
-                            moduleCoordinates = dep.moduleCoordinates,
-                            localDir = resolved.localDir
-                        ))
-                        substitutions.add(CompositeIncluder.ModuleSubstitution(dep.moduleCoordinates, ":"))
-                        lockEntries.add(dep.ref.toLockEntry(dep.url, resolved.commitHash, dep.moduleCoordinates))
-                        continue
-                    }
-
-                    val targetSubmodules = when {
-                        dep.submoduleNames == null -> allSubmodules
-                        dep.submoduleNames.isEmpty() -> allSubmodules.filter { it.projectPath == ":" }
-                        else -> allSubmodules.filter { it.moduleName in dep.submoduleNames }
-                    }
-
-                    if (targetSubmodules.isEmpty()) {
-                        logger.warn("[Klone] No submodules found for $url — skipping.")
-                        continue
-                    }
-
-                    for (info in targetSubmodules) {
-                        KloneRegistry.register(dep.url, info.moduleName, KloneRegistry.Entry(
-                            url = dep.url,
-                            moduleCoordinates = info.coordinates,
-                            localDir = resolved.localDir
-                        ))
-                        substitutions.add(CompositeIncluder.ModuleSubstitution(info.coordinates, info.projectPath))
-                    }
-
-                    lockEntries.add(dep.ref.toLockEntry(
-                        dep.url,
-                        resolved.commitHash,
-                        targetSubmodules.joinToString(",") { it.coordinates }
-                    ))
-                }
-
-                val distinctSubs = substitutions.distinctBy { it.coordinates }
-                CompositeIncluder.includeAll(settings, resolved.localDir, distinctSubs)
-                logger.lifecycle("[Klone] Included ${resolved.localDir.name} @ ${resolved.commitHash.take(8)}" +
-                    " (${distinctSubs.size} module substitution(s))")
-            }
-
-            if (lockEntries.isNotEmpty()) {
-                lockManager.write(lockEntries)
-            }
-
-            // --- Local dependencies ---
-            val scannedLocal = BuildFileScanner.scanProjectForLocal(settings.rootDir)
-            val explicitLocal = extension.localDependencies
-            val allLocalDeps = (scannedLocal + explicitLocal).distinctBy { it.path }
-
-            if (allLocalDeps.isNotEmpty()) {
-                logger.lifecycle("[Klone] Resolving ${allLocalDeps.size} local dependency declaration(s)...")
-            }
-
-            for (dep in allLocalDeps) {
-                val localDir = resolveLocalPath(dep.path, settings.rootDir)
-
-                require(localDir.exists()) {
-                    "Local dependency path does not exist: ${localDir.absolutePath}"
-                }
-                require(hasBuildFile(localDir)) {
-                    "No build.gradle.kts or build.gradle found at: ${localDir.absolutePath}"
-                }
-
-                val registryKey = "local:${localDir.absolutePath}"
-
-                val allSubmodules = ModuleDetector.detectAllSubmodules(localDir)
-
-                when {
-                    allSubmodules.isEmpty() ->
-                        logger.warn("[Klone] No modules detected in ${localDir.name} — check that build.gradle.kts and settings.gradle.kts exist")
-                    allSubmodules.size == 1 && allSubmodules[0].moduleName == null ->
-                        logger.lifecycle("[Klone] ${localDir.name}: single-module (${allSubmodules[0].coordinates})")
-                    else ->
-                        logger.lifecycle("[Klone] ${localDir.name}: ${allSubmodules.size} modules detected — ${allSubmodules.map { it.moduleName ?: "root" }}")
-                }
-
-                val substitutions = mutableListOf<CompositeIncluder.ModuleSubstitution>()
-
-                if (dep.moduleCoordinates != null) {
-                    KloneRegistry.register(registryKey, null, KloneRegistry.Entry(
-                        url = registryKey,
-                        moduleCoordinates = dep.moduleCoordinates,
-                        localDir = localDir
-                    ))
-                    substitutions.add(CompositeIncluder.ModuleSubstitution(dep.moduleCoordinates, ":"))
-                } else {
-                    val targetSubmodules = when {
-                        dep.submoduleNames == null -> allSubmodules
-                        dep.submoduleNames.isEmpty() -> allSubmodules.filter { it.projectPath == ":" }
-                        else -> allSubmodules.filter { it.moduleName in dep.submoduleNames }
-                    }
-
-                    for (info in targetSubmodules) {
-                        KloneRegistry.register(registryKey, info.moduleName, KloneRegistry.Entry(
-                            url = registryKey,
-                            moduleCoordinates = info.coordinates,
-                            localDir = localDir
-                        ))
-                        substitutions.add(CompositeIncluder.ModuleSubstitution(info.coordinates, info.projectPath))
-                    }
-                }
-
-                val distinctSubs = substitutions.distinctBy { it.coordinates }
-                CompositeIncluder.includeAll(settings, localDir, distinctSubs)
-                logger.lifecycle("[Klone] Included local ${localDir.name} (${distinctSubs.size} module substitution(s))")
-            }
-        }
+        settings.gradle.settingsEvaluated { resolveAll(settings, extension) }
     }
 
-    internal fun injectSdkDir(localDir: File, hostRootDir: File) {
-        val clonedProps = File(localDir, "local.properties")
-        if (clonedProps.exists() && clonedProps.readText().contains("sdk.dir")) return
+    private fun resolveAll(settings: Settings, extension: KloneSettingsExtension) {
+        val rootDir = settings.rootDir
+        // The registry outlives builds in the daemon — start clean every time
+        KloneRegistry.clear()
+        KloneRegistry.rootDir = rootDir
 
-        val sdkLine = readSdkDirFromHost(hostRootDir) ?: run {
-            logger.warn("[Klone] No sdk.dir found in host local.properties — skipping injection for ${localDir.name}")
+        val catalog = KloneCatalog.parse(extension.catalogFile ?: File(rootDir, KloneCatalog.DEFAULT_PATH))
+        val versions = VersionCatalogReader.read(rootDir)
+        val gitDeps = BuildFileScanner.scanProject(rootDir, versions) + extension.dependencies + catalog.gitDependencies
+        val localDeps = BuildFileScanner.scanProjectForLocal(rootDir) + extension.localDependencies + catalog.localDependencies
+        if (gitDeps.isEmpty() && localDeps.isEmpty()) {
+            KloneTasks.register(settings, emptyList(), resolveCacheDir(settings, extension))
             return
         }
 
-        if (clonedProps.exists()) {
-            clonedProps.appendText("\n$sdkLine\n")
+        val usedBuildNames = mutableSetOf(settings.rootProject.name)
+        val cacheDir = resolveCacheDir(settings, extension)
+        val repos = resolveGit(settings, gitDeps.distinct(), usedBuildNames, cacheDir, extension.propagatedProperties)
+        resolveLocal(settings, localDeps.distinct(), usedBuildNames)
+        KloneTasks.register(settings, repos, cacheDir)
+    }
+
+    private fun resolveGit(
+        settings: Settings,
+        deps: List<GitDependency>,
+        usedBuildNames: MutableSet<String>,
+        cacheDir: File,
+        allowedProperties: List<String>
+    ): List<KloneTasks.ResolvedRepo> {
+        if (deps.isEmpty()) return emptyList()
+        val offline = settings.startParameter.isOffline
+        val refresh = settings.startParameter.isRefreshDependencies
+        val update = UpdateRequest.parse(settings.providers.gradleProperty("klone.update").orNull)
+        val frozen = settings.providers.gradleProperty("klone.frozen").orNull == "true"
+        if (frozen && update.any) throw GradleException("[Klone] -Pklone.frozen=true and -Pklone.update cannot be combined")
+        val lockManager = LockFileManager(settings.rootDir)
+        val lockEntries = mutableListOf<LockFileManager.LockEntry>()
+        val repos = mutableListOf<KloneTasks.ResolvedRepo>()
+        val hostVersions = PluginVersions.detect(settings.rootDir)
+
+        // https://host/a/b, https://host/a/b.git and git@host:a/b are the same repo: one clone, one includeBuild
+        val depsByRepo = deps.groupBy { gitUrlKey(it.url).lowercase() }
+        logger.lifecycle("[Klone] Resolving ${depsByRepo.size} git repo(s)...")
+
+        if (frozen) {
+            val unlocked = depsByRepo.values.map { it.first() }.filter { lockManager.locked(it.url, it.ref) == null }
+            if (unlocked.isNotEmpty()) throw GradleException(
+                "[Klone] klone.resolved is out of date (-Pklone.frozen=true):\n" +
+                    unlocked.joinToString("\n") { "  ${it.url} (${it.ref.describe()}) is not locked" } +
+                    "\nRun the build without klone.frozen and commit klone.resolved."
+            )
+        }
+
+        for (group in depsByRepo.values) {
+            val first = group.first()
+            val refs = group.map { it.ref }.distinct()
+            if (refs.size > 1) {
+                throw GradleException(
+                    "[Klone] ${first.url} is declared with different refs: ${refs.joinToString { it.describe() }}.\n" +
+                        "Use the same version/branch/commit everywhere (one checkout per repo)."
+                )
+            }
+            val dirs = group.map { it.dir }.distinct()
+            if (dirs.size > 1) throw GradleException("[Klone] ${first.url} is declared with different `dir` values: $dirs")
+
+            val locked = if (update.matches(first)) null else lockManager.locked(first.url, first.ref)
+            val resolved = try {
+                GitResolveValueSource.resolve(settings.providers, first, locked, cacheDir, offline, refresh)
+            } catch (e: Exception) {
+                // ValueSource failures arrive wrapped; surface git's own message
+                val cause = generateSequence<Throwable>(e) { it.cause }.firstOrNull { it is KloneGitException } ?: e
+                throw GradleException("[Klone] Failed to resolve ${first.url} (${first.ref.describe()}): ${cause.message}", cause)
+            }
+            val pin = if (locked != null) " (locked — run with -Pklone.update=${first.repoName} to update)" else ""
+            val tag = resolved.tag?.let { " ($it)" } ?: ""
+            logger.lifecycle("[Klone] ${first.url}$tag @ ${resolved.commitHash.take(8)}$pin")
+
+            val buildDir = first.dir?.let { File(resolved.localDir, it) } ?: resolved.localDir
+            if (!buildDir.isDirectory) throw GradleException("[Klone] dir \"${first.dir}\" does not exist in ${first.url}")
+            HostPropagation.propagate(buildDir, settings, allowedProperties)
+            propagateRepoRepositories(settings, buildDir)
+            PluginVersions.warnIfIncompatible(hostVersions, buildDir, first.url, logger)
+
+            val selected = includeSource(settings, first.url, buildDir, group, uniqueName(buildDir, usedBuildNames))
+            lockEntries += first.ref.toLockEntry(first.url, resolved.commitHash, selected.joinToString(",") { it.coordinates }, resolved.tag)
+            repos += KloneTasks.ResolvedRepo(first.url, first.ref.type, first.ref.value, first.tagPattern, resolved.commitHash, resolved.tag, resolved.localDir.absolutePath)
+        }
+
+        if (frozen) {
+            val drift = lockManager.diff(lockEntries)
+            if (drift.isNotEmpty()) throw GradleException(
+                "[Klone] klone.resolved is out of date (-Pklone.frozen=true):\n" + drift.joinToString("\n") { "  $it" }
+            )
         } else {
-            clonedProps.writeText("# Propagated by Klone from host project\n$sdkLine\n")
+            lockManager.write(lockEntries)
         }
-        logger.lifecycle("[Klone] Propagated sdk.dir into ${localDir.name}/local.properties")
+        return repos
     }
 
-    internal fun readSdkDirFromHost(hostRootDir: File): String? {
-        val hostProps = File(hostRootDir, "local.properties")
-        if (!hostProps.exists()) return null
-        return Regex("""^sdk\.dir=.+$""", RegexOption.MULTILINE)
-            .find(hostProps.readText())
-            ?.value
+    /** `-Pklone.update=true` updates everything; `-Pklone.update=sdk,design` only repos whose name or URL match. */
+    internal class UpdateRequest(private val all: Boolean, private val names: List<String>) {
+        val any: Boolean get() = all || names.isNotEmpty()
+
+        fun matches(dep: GitDependency): Boolean =
+            all || names.any { it.equals(dep.repoName, ignoreCase = true) || dep.url.contains(it, ignoreCase = true) }
+
+        companion object {
+            fun parse(value: String?): UpdateRequest = when (value?.trim()) {
+                null, "", "false" -> UpdateRequest(false, emptyList())
+                "true" -> UpdateRequest(true, emptyList())
+                else -> UpdateRequest(false, value.split(',').map { it.trim() }.filter { it.isNotEmpty() })
+            }
+        }
     }
 
-    internal fun injectGradleProperties(localDir: File, hostRootDir: File) {
-        val merged = java.util.Properties()
-        hostRootDir.listFiles { f -> f.isFile && f.name.endsWith(".properties") }
-            ?.sortedBy { it.name }
-            ?.forEach { f -> f.inputStream().use { merged.load(it) } }
-        if (merged.isEmpty) return
-
-        val clonedPropsFile = File(localDir, "gradle.properties")
-        val existingContent = if (clonedPropsFile.exists()) clonedPropsFile.readText() else ""
-
-        // Original content = everything outside the sentinel block (never modified)
-        val originalContent = removeSentinelBlock(existingContent)
-        val originalKeys: Set<String> = java.util.Properties().also { p ->
-            if (originalContent.isNotBlank()) p.load(originalContent.reader())
-        }.stringPropertyNames()
-
-        val toInject = merged.stringPropertyNames()
-            .filter { it !in originalKeys }
-            .sorted()
-
-        if (toInject.isEmpty()) {
-            // Clean up stale sentinel block if nothing to inject anymore
-            if (existingContent != originalContent) clonedPropsFile.writeText(originalContent)
-            return
+    private fun resolveLocal(settings: Settings, deps: List<LocalDependency>, usedBuildNames: MutableSet<String>) {
+        for ((dir, group) in deps.groupBy { KloneRegistry.resolveLocalDir(it.path, settings.rootDir) }) {
+            if (!dir.isDirectory) throw GradleException("[Klone] Local dependency path does not exist: ${dir.absolutePath}")
+            if (!File(dir, "build.gradle.kts").exists() && !File(dir, "build.gradle").exists()) {
+                throw GradleException("[Klone] No build.gradle.kts or build.gradle found at: ${dir.absolutePath}")
+            }
+            includeSource(settings, KloneRegistry.localKey(dir), dir, group, uniqueName(dir, usedBuildNames))
+            logger.lifecycle("[Klone] Included local ${dir.name}")
         }
-
-        val lines = toInject.joinToString("\n") { key -> "$key=${merged.getProperty(key)}" }
-        val sentinelBlock = "# <klone-injected>\n$lines\n# </klone-injected>"
-
-        val newContent = when {
-            existingContent.contains("# <klone-injected>") ->
-                replaceSentinelBlock(existingContent, sentinelBlock)
-            originalContent.isNotEmpty() ->
-                originalContent.trimEnd { it == '\n' } + "\n\n$sentinelBlock\n"
-            else -> "$sentinelBlock\n"
-        }
-
-        clonedPropsFile.writeText(newContent)
-        logger.lifecycle("[Klone] Propagated ${toInject.size} gradle.properties entr${if (toInject.size == 1) "y" else "ies"} into ${localDir.name}")
     }
 
-    internal fun injectHostRepositories(localDir: File, settings: Settings) {
-        val repos = settings.dependencyResolutionManagement.repositories
-            .filterIsInstance<MavenArtifactRepository>()
-            .filter { !isPublicRepo(it.url.toString()) }
-        if (repos.isEmpty()) return
+    /** Detects modules, registers the selected ones and adds one includeBuild with their substitutions. */
+    private fun includeSource(
+        settings: Settings,
+        key: String,
+        dir: File,
+        selections: List<ModuleSelection>,
+        buildName: String
+    ): List<SubmoduleInfo> {
+        val detected = ModuleDetector.detectAllSubmodules(dir)
+        when {
+            detected.isEmpty() ->
+                logger.warn("[Klone] No modules detected in ${dir.name} — check that build.gradle(.kts) and settings.gradle(.kts) exist")
+            detected.size == 1 && detected[0].moduleName == null ->
+                logger.info("[Klone] ${dir.name}: single-module (${detected[0].coordinates})")
+            else ->
+                logger.info("[Klone] ${dir.name}: ${detected.size} modules — ${detected.map { it.moduleName ?: "root" }}")
+        }
 
-        val clonedSettingsFile = File(localDir, "settings.gradle.kts").takeIf { it.exists() }
-            ?: File(localDir, "settings.gradle").takeIf { it.exists() }
-            ?: return
-
-        val repoBlocks = repos.map { repo ->
-            val url = repo.url.toString()
-            val creds = repo.credentials
-            val user = creds.username
-            val pass = creds.password
-            buildString {
-                appendLine("        maven {")
-                appendLine("            url = uri(\"$url\")")
-                if (user != null || pass != null) {
-                    appendLine("            credentials {")
-                    if (user != null) appendLine("                username = \"$user\"")
-                    if (pass != null) appendLine("                password = \"$pass\"")
-                    appendLine("            }")
-                }
-                append("        }")
+        val registered = mutableListOf<SubmoduleInfo>()
+        for (selection in selections) {
+            for (info in select(detected, selection, dir)) {
+                // Explicit coordinates register under the root key, like the settings DSL always did
+                val name = if (selection.moduleCoordinates != null) null else info.moduleName
+                KloneRegistry.register(key, name, KloneRegistry.Entry(key, info.coordinates, dir))
+                registered += info
             }
         }
 
-        val sentinelBlock = buildString {
-            appendLine("// <klone-repos>")
-            appendLine("dependencyResolutionManagement {")
-            appendLine("    repositories {")
-            repoBlocks.forEach { appendLine(it) }
-            appendLine("    }")
-            appendLine("}")
-            append("// </klone-repos>")
-        }
-
-        writeSettingsSentinel(clonedSettingsFile, sentinelBlock)
-        logger.lifecycle("[Klone] Propagated ${repos.size} private Maven repo(s) into ${localDir.name}/settings")
-    }
-
-    internal companion object {
-        fun writeSettingsSentinel(file: File, sentinelBlock: String) {
-            val content = file.readText()
-            val startTag = "// <klone-repos>"
-            val endTag = "// </klone-repos>"
-            val newContent = if (content.contains(startTag)) {
-                val start = content.indexOf(startTag)
-                val end = content.indexOf(endTag)
-                if (end == -1) content else
-                    content.substring(0, start) + sentinelBlock + content.substring(end + endTag.length)
-            } else {
-                content.trimEnd { it == '\n' } + "\n\n$sentinelBlock\n"
-            }
-            file.writeText(newContent)
-        }
-    }
-
-    internal fun extractMavenBlocks(content: String): List<String> {
-        val result = mutableListOf<String>()
-        val regex = Regex("""maven\s*\{""")
-        for (match in regex.findAll(content)) {
-            val start = match.range.first
-            var depth = 0
-            var end = start
-            for (i in match.range.last..content.lastIndex) {
-                if (content[i] == '{') depth++
-                else if (content[i] == '}') {
-                    depth--
-                    if (depth == 0) { end = i; break }
-                }
-            }
-            result.add(content.substring(start, end + 1))
-        }
-        return result
-    }
-
-    internal fun extractUrlFromMavenBlock(block: String): String? {
-        val match = Regex("""url\s*=?\s*(?:uri\s*\(\s*)?["']([^"']+)["']""").find(block)
-        return match?.groupValues?.get(1)
-    }
-
-    private fun isPublicRepo(url: String): Boolean {
-        val publicPrefixes = listOf(
-            "https://dl.google.com/dl/android/maven2",
-            "https://repo1.maven.org/maven2",
-            "https://repo.maven.apache.org/maven2",
-            "https://jcenter.bintray.com",
-            "https://plugins.gradle.org/m2",
+        val distinct = registered.distinctBy { it.coordinates }
+        CompositeIncluder.includeAll(
+            settings, dir,
+            distinct.map { CompositeIncluder.ModuleSubstitution(it.coordinates, it.projectPath) },
+            buildName
         )
-        return publicPrefixes.any { url.startsWith(it) }
+        return distinct
     }
 
-    private fun removeSentinelBlock(content: String): String {
-        val startTag = "# <klone-injected>"
-        val endTag = "# </klone-injected>"
-        val start = content.indexOf(startTag)
-        val end = content.indexOf(endTag)
-        if (start == -1 || end == -1) return content
-        val before = content.substring(0, start).trimEnd { it == '\n' }
-        val after = content.substring(end + endTag.length).trimStart { it == '\n' }
-        return buildString {
-            if (before.isNotEmpty()) append(before).append('\n')
-            append(after)
+    internal fun select(detected: List<SubmoduleInfo>, selection: ModuleSelection, dir: File): List<SubmoduleInfo> {
+        val names = selection.submoduleNames
+        fun matches(info: SubmoduleInfo, name: String) =
+            info.moduleName == name || info.projectPath == name || info.projectPath == ":$name" ||
+                info.projectPath.substringAfterLast(':') == name
+
+        selection.moduleCoordinates?.let { coords ->
+            // Known coordinates (settings DSL / version catalog): find the project that builds them
+            val artifact = names?.singleOrNull() ?: coords.split(':').getOrNull(1)
+            val project = detected.firstOrNull { artifact != null && matches(it, artifact) }?.projectPath ?: ":"
+            return listOf(SubmoduleInfo(project, coords.split(':').take(2).joinToString(":"), artifact))
+        }
+        return when {
+            names == null -> detected
+            names.isEmpty() -> detected.filter { it.projectPath == ":" }
+            else -> names.map { name ->
+                detected.firstOrNull { matches(it, name) } ?: throw GradleException(
+                    "[Klone] Module '$name' not found in ${dir.name}. Available: ${detected.map { it.moduleName ?: "root" }}"
+                )
+            }
         }
     }
 
-    private fun replaceSentinelBlock(content: String, newBlock: String): String {
-        val startTag = "# <klone-injected>"
-        val endTag = "# </klone-injected>"
-        val start = content.indexOf(startTag)
-        val end = content.indexOf(endTag)
-        if (start == -1 || end == -1) return content
-        return content.substring(0, start) + newBlock + content.substring(end + endTag.length)
+    /** Repos the cloned build declares itself (e.g. JitPack) so its transitive deps resolve in the host. */
+    private fun propagateRepoRepositories(settings: Settings, dir: File) {
+        val extraRepos = ModuleDetector.extractMavenUrls(dir)
+        if (extraRepos.isEmpty()) return
+        val existing = settings.dependencyResolutionManagement.repositories
+            .filterIsInstance<org.gradle.api.artifacts.repositories.MavenArtifactRepository>()
+            .map { it.url.toString().trimEnd('/') }
+            .toSet()
+        val missing = extraRepos.filter { it.trimEnd('/') !in existing }
+        if (missing.isEmpty()) return
+        logger.lifecycle("[Klone] Propagating ${missing.size} repository(ies) from ${dir.name}")
+        settings.dependencyResolutionManagement.repositories { handler ->
+            missing.forEach { url -> handler.maven { it.url = URI(url) } }
+        }
     }
 
-    private fun resolveLocalPath(path: String, rootDir: File): File {
-        val file = File(path)
-        return if (file.isAbsolute) file else File(rootDir, path).canonicalFile
+    private fun uniqueName(dir: File, used: MutableSet<String>): String {
+        val candidates = sequenceOf(dir.name, "${dir.parentFile?.name}-${dir.name}") + generateSequence(2) { it + 1 }.map { "${dir.name}-$it" }
+        return candidates.first { used.add(it) }
     }
 
-    private fun hasBuildFile(dir: File): Boolean =
-        File(dir, "build.gradle.kts").exists() || File(dir, "build.gradle").exists()
-
-    private fun mergeUnique(scanned: List<GitDependency>, explicit: List<GitDependency>): List<GitDependency> {
-        val keyFor = { dep: GitDependency -> dep.url + "#" + dep.submoduleNames?.joinToString(",") }
-        val map = LinkedHashMap<String, GitDependency>()
-        scanned.forEach { map[keyFor(it)] = it }
-        explicit.forEach { map[keyFor(it)] = it }
-        return map.values.toList()
+    /** `KLONE_CACHE_DIR` > `klone { cacheDir }` > `-Pklone.cacheDir` > `$GRADLE_USER_HOME/caches/klone`. */
+    private fun resolveCacheDir(settings: Settings, extension: KloneSettingsExtension): File {
+        settings.providers.environmentVariable("KLONE_CACHE_DIR").orNull?.let { return File(it) }
+        extension.cacheDir?.let { return it }
+        settings.providers.gradleProperty("klone.cacheDir").orNull?.let { return File(it) }
+        // Inside Gradle's caches: cleared with them, and saved by CI Gradle caching (e.g. gradle/actions/setup-gradle)
+        return File(settings.gradle.gradleUserHomeDir, "caches/klone")
     }
-
-    private fun resolveCacheDir(): File {
-        val envOverride = System.getenv("KLONE_CACHE_DIR")
-        return if (envOverride != null) File(envOverride)
-        else File(System.getProperty("user.home"), ".klone/packages")
-    }
-}
-
-private fun dev.klone.model.GitRef.describe(): String = when (this) {
-    is dev.klone.model.GitRef.Tag -> "tag: $name"
-    is dev.klone.model.GitRef.Branch -> "branch: $name"
-    is dev.klone.model.GitRef.Commit -> "commit: ${hash.take(8)}"
 }

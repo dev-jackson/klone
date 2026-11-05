@@ -3,143 +3,103 @@ package dev.klone.resolver
 import dev.klone.model.GitDependency
 import dev.klone.model.GitRef
 import dev.klone.model.LocalDependency
+import dev.klone.toml.VersionCatalogReader
 import java.io.File
 
 /**
- * Scans build.gradle.kts files for gitImplementation() calls BEFORE Gradle
- * evaluates them, so the settings plugin can clone repos and set up composite
- * builds in the settings phase.
+ * Scans build.gradle(.kts) files for gitImplementation() / localImplementation() calls BEFORE
+ * Gradle evaluates them, so the settings plugin can clone repos and set up composite builds in
+ * the settings phase.
  *
- * Only literal string patterns are supported (variables not supported by design).
+ * Arguments must be string literals, `listOf("...")`, or version catalog references
+ * (`libs.versions.retrofit.get()`). Calls may span lines; commented-out calls are ignored.
  *
- * Supported patterns:
- *   gitImplementation("url", from = "1.0.0")
+ *   gitImplementation("url", from = "1.0.0")          // SPM: up to next major
+ *   gitImplementation("url", exact = "1.0.0")
+ *   gitImplementation("url", upToNextMinor = "1.4.0")
+ *   gitImplementation("url", version = ">=1.0.0 <2.0.0")
+ *   gitImplementation("url", tag = "release-7")
  *   gitImplementation("url", branch = "main")
  *   gitImplementation("url", commit = "abc123")
- *   gitImplementation("url", module = "converter-gson", from = "1.0.0")
- *   gitImplementation("url", modules = listOf("converter-gson", "adapter-rxjava2"), from = "1.0.0")
+ *   gitImplementation("url", module = "converter-gson", from = libs.versions.retrofit.get())
+ *   gitImplementation("url", modules = listOf("converter-gson", "adapter-rxjava2"))
+ *   localImplementation("../shared", module = "core")
  */
 object BuildFileScanner {
 
-    // Matches calls that contain modules = listOf(...) — handles the nested paren
-    private val MODULES_CALL_PATTERN = Regex(
-        """gitImplementation\s*\(\s*["']([^"']+)["']([^(]*)\bmodules\s*=\s*listOf\s*\(([^)]*)\)([^)]*)\)"""
+    private const val GIT_CALL = "gitImplementation"
+    private const val LOCAL_CALL = "localImplementation"
+
+    // Same order as the gitImplementation() parameters
+    private val GIT_POSITIONAL = listOf(
+        "url", "from", "branch", "commit", "module", "modules",
+        "exact", "upToNextMinor", "version", "tag", "tagPattern", "dir"
     )
+    private val REF_PARAMS = listOf("from", "exact", "upToNextMinor", "version", "tag", "branch", "commit")
+    private val LOCAL_POSITIONAL = listOf("path", "module", "modules")
 
-    // Matches simple calls with no nested parens (covers from/branch/commit/module params)
-    private val SIMPLE_CALL_PATTERN = Regex(
-        """gitImplementation\s*\(\s*["']([^"']+)["']([^)(]*)\)"""
-    )
+    private val SKIPPED_DIRS = setOf("build", ".gradle", ".git", ".idea", "node_modules")
 
-    private val FROM_PARAM = Regex("""(?<!\w)from\s*=\s*["']([^"']+)["']""")
-    private val BRANCH_PARAM = Regex("""(?<!\w)branch\s*=\s*["']([^"']+)["']""")
-    private val COMMIT_PARAM = Regex("""(?<!\w)commit\s*=\s*["']([^"']+)["']""")
-    private val MODULE_PARAM = Regex("""(?<!\w)module\s*=\s*["']([^"']+)["']""")
-    private val STRING_LITERAL = Regex("""["']([^"']+)["']""")
+    fun scanProject(projectDir: File, versions: Map<String, String> = VersionCatalogReader.read(projectDir)): List<GitDependency> =
+        buildFiles(projectDir).flatMap { scanFile(it, versions) }.distinct().toList()
 
-    fun scanProject(projectDir: File): List<GitDependency> {
-        return projectDir.walkTopDown()
-            .filter { it.name == "build.gradle.kts" || it.name == "build.gradle" }
-            .filter { !it.absolutePath.contains("${File.separator}build${File.separator}") }
-            .flatMap { scanFile(it) }
-            .distinctBy { it.url + it.ref.toString() + it.submoduleNames?.joinToString(",") }
-            .toList()
-    }
-
-    fun scanFile(buildFile: File): List<GitDependency> {
-        if (!buildFile.exists()) return emptyList()
-        val content = buildFile.readText()
-        val deps = mutableListOf<GitDependency>()
-
-        // First pass: calls with modules = listOf(...)
-        MODULES_CALL_PATTERN.findAll(content).forEach { match ->
-            val url = match.groupValues[1]
-            val paramsBefore = match.groupValues[2]
-            val listContent = match.groupValues[3]
-            val paramsAfter = match.groupValues[4]
-
-            val allParams = paramsBefore + paramsAfter
-            val ref = extractRef(allParams) ?: return@forEach
-            val moduleNames = STRING_LITERAL.findAll(listContent).map { it.groupValues[1] }.toList()
-
-            deps += GitDependency(url = url, ref = ref, submoduleNames = moduleNames)
-        }
-
-        // Second pass: simple calls (no nested parens — won't match listOf calls)
-        SIMPLE_CALL_PATTERN.findAll(content).forEach { match ->
-            val url = match.groupValues[1]
-            val params = match.groupValues[2]
-
-            val ref = extractRef(params) ?: return@forEach
-            val moduleName = MODULE_PARAM.find(params)?.groupValues?.get(1)
-            val submoduleNames = if (moduleName != null) listOf(moduleName) else null
-
-            deps += GitDependency(url = url, ref = ref, submoduleNames = submoduleNames)
-        }
-
-        return deps.distinctBy { it.url + it.ref.toString() + it.submoduleNames?.joinToString(",") }
-    }
-
-    private fun extractRef(params: String): GitRef? {
-        FROM_PARAM.find(params)?.let { return GitRef.Tag(it.groupValues[1]) }
-        BRANCH_PARAM.find(params)?.let { return GitRef.Branch(it.groupValues[1]) }
-        COMMIT_PARAM.find(params)?.let { return GitRef.Commit(it.groupValues[1]) }
-        return null
-    }
-
-    // --- Local dependency scanning ---
-
-    private val LOCAL_MODULES_CALL_PATTERN = Regex(
-        """localImplementation\s*\(\s*["']([^"']+)["']([^(]*)\bmodules\s*=\s*listOf\s*\(([^)]*)\)([^)]*)\)"""
-    )
-
-    private val LOCAL_SIMPLE_CALL_PATTERN = Regex(
-        """localImplementation\s*\(\s*["']([^"']+)["']([^)(]*)\)"""
-    )
-
-    fun scanProjectForLocal(projectDir: File): List<LocalDependency> {
-        return projectDir.walkTopDown()
-            .filter { it.name == "build.gradle.kts" || it.name == "build.gradle" }
-            .filter { !it.absolutePath.contains("${File.separator}build${File.separator}") }
-            .flatMap { scanFileForLocal(it) }
-            .distinctBy { it.path }
-            .toList()
-    }
-
-    fun scanFileForLocal(buildFile: File): List<LocalDependency> {
-        if (!buildFile.exists()) return emptyList()
-        val content = buildFile.readText()
-        val deps = mutableListOf<LocalDependency>()
-
-        LOCAL_MODULES_CALL_PATTERN.findAll(content).forEach { match ->
-            val path = match.groupValues[1]
-            val paramsBefore = match.groupValues[2]
-            val listContent = match.groupValues[3]
-            val paramsAfter = match.groupValues[4]
-
-            val allParams = paramsBefore + paramsAfter
-            val moduleCoords = MODULE_PARAM.find(allParams)?.groupValues?.get(1)
-            val moduleNames = STRING_LITERAL.findAll(listContent).map { it.groupValues[1] }.toList()
-
-            deps += LocalDependency(
-                path = path,
-                moduleCoordinates = moduleCoords,
-                submoduleNames = moduleNames
+    fun scanFile(buildFile: File, versions: Map<String, String> = emptyMap()): List<GitDependency> =
+        calls(buildFile, GIT_CALL).mapNotNull { call ->
+            val args = bind(call, GIT_POSITIONAL)
+            val url = args["url"]?.let { ScriptParser.stringLiteral(it) } ?: return@mapNotNull null
+            val refs = REF_PARAMS.associateWith { value(args[it], versions) }
+            val ref = try {
+                GitRef.fromParams(refs["from"], refs["exact"], refs["upToNextMinor"], refs["version"], refs["tag"], refs["branch"], refs["commit"])
+            } catch (e: IllegalArgumentException) {
+                throw org.gradle.api.GradleException("[Klone] gitImplementation(\"$url\") in ${buildFile.path}: ${e.message}")
+            }
+            GitDependency(
+                url = url,
+                ref = ref ?: GitRef.Default,
+                submoduleNames = submodules(args),
+                tagPattern = value(args["tagPattern"], versions),
+                dir = value(args["dir"], versions)
             )
-        }
+        }.distinct()
 
-        LOCAL_SIMPLE_CALL_PATTERN.findAll(content).forEach { match ->
-            val path = match.groupValues[1]
-            val params = match.groupValues[2]
+    fun scanProjectForLocal(projectDir: File): List<LocalDependency> =
+        buildFiles(projectDir).flatMap { scanFileForLocal(it) }.distinct().toList()
 
-            val moduleCoords = MODULE_PARAM.find(params)?.groupValues?.get(1)
+    fun scanFileForLocal(buildFile: File): List<LocalDependency> =
+        calls(buildFile, LOCAL_CALL).mapNotNull { call ->
+            val args = bind(call, LOCAL_POSITIONAL)
+            val path = args["path"]?.let { ScriptParser.stringLiteral(it) } ?: return@mapNotNull null
+            LocalDependency(path = path, submoduleNames = submodules(args))
+        }.distinct()
 
-            deps += LocalDependency(
-                path = path,
-                moduleCoordinates = moduleCoords
-            )
-        }
+    /** Build files of this build only: skips outputs and nested builds with their own settings file. */
+    private fun buildFiles(projectDir: File): Sequence<File> =
+        projectDir.walkTopDown()
+            .onEnter { dir ->
+                dir == projectDir || (dir.name !in SKIPPED_DIRS &&
+                    !File(dir, "settings.gradle.kts").exists() && !File(dir, "settings.gradle").exists())
+            }
+            .filter { it.isFile && (it.name == "build.gradle.kts" || it.name == "build.gradle") }
 
-        return deps.distinctBy { it.path }
+    private fun calls(buildFile: File, name: String): List<ScriptParser.Call> {
+        if (!buildFile.exists()) return emptyList()
+        return ScriptParser.findCalls(ScriptParser.stripComments(buildFile.readText()), setOf(name))
     }
+
+    /** Maps positional and named args to parameter names. */
+    private fun bind(call: ScriptParser.Call, positional: List<String>): Map<String, String> {
+        val bound = mutableMapOf<String, String>()
+        call.args.forEachIndexed { i, arg ->
+            val name = arg.name ?: positional.getOrNull(i) ?: return@forEachIndexed
+            bound[name] = arg.expr
+        }
+        return bound
+    }
+
+    private fun value(expr: String?, versions: Map<String, String>): String? =
+        expr?.let { ScriptParser.stringLiteral(it) ?: VersionCatalogReader.resolve(it, versions) }
+
+    private fun submodules(args: Map<String, String>): List<String>? =
+        args["module"]?.let { ScriptParser.stringLiteral(it) }?.let { listOf(it) }
+            ?: args["modules"]?.let { ScriptParser.stringList(it) }
 }

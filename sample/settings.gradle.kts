@@ -16,7 +16,7 @@ dependencyResolutionManagement {
 }
 
 plugins {
-    id("dev.klone") version "1.0.0-SNAPSHOT"
+    id("io.github.dev-jackson.klone") version "2.0.0-beta1"
 }
 
 rootProject.name = "sample-app"

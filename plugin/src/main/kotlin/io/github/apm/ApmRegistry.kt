@@ -1,5 +1,6 @@
 package dev.klone
 
+import dev.klone.model.gitUrlKey
 import java.io.File
 
 /**
@@ -18,17 +19,21 @@ object KloneRegistry {
     )
 
     private val entries = mutableMapOf<String, Entry>()
-    private val urlToModules = mutableMapOf<String, MutableList<String?>>()
+    private val urlToModules = mutableMapOf<String, LinkedHashSet<String?>>()
+
+    /** Host build root — relative localImplementation() paths resolve against it. */
+    @Volatile
+    var rootDir: File? = null
 
     fun register(url: String, moduleName: String?, entry: Entry) {
         entries[key(url, moduleName)] = entry
-        urlToModules.getOrPut(url.normalizeUrl()) { mutableListOf() }.add(moduleName)
+        urlToModules.getOrPut(url.normalizeUrl()) { linkedSetOf() }.add(moduleName)
     }
 
     fun find(url: String, moduleName: String? = null): Entry? = entries[key(url, moduleName)]
 
     fun allModulesFor(url: String): List<String?> =
-        urlToModules[url.normalizeUrl()] ?: emptyList()
+        urlToModules[url.normalizeUrl()]?.toList() ?: emptyList()
 
     fun all(): Map<String, Entry> = entries.toMap()
 
@@ -37,24 +42,17 @@ object KloneRegistry {
         urlToModules.clear()
     }
 
+    fun localKey(dir: File): String = "local:${dir.canonicalPath}"
+
+    /** Same rule in settings and project phase so keys always match. */
+    fun resolveLocalDir(path: String, rootDir: File): File {
+        val file = File(path)
+        return (if (file.isAbsolute) file else File(rootDir, path)).canonicalFile
+    }
+
     private fun key(url: String, moduleName: String?): String =
         "${url.normalizeUrl()}#${moduleName ?: ""}"
 
-    private fun String.normalizeUrl(): String {
-        if (startsWith("local:")) return this
-        val normalized = when {
-            startsWith("git@") -> {
-                // git@github.com:user/repo.git → github.com/user/repo
-                val host = removePrefix("git@").substringBefore(':')
-                val path = substringAfter(':').removeSuffix(".git")
-                "$host/$path"
-            }
-            else -> {
-                val noScheme = removePrefix("https://").removePrefix("http://")
-                // Strip embedded auth: user:token@host/path → host/path
-                if (noScheme.contains('@')) noScheme.substringAfter('@') else noScheme
-            }
-        }
-        return normalized.trimEnd('/').removeSuffix(".git").lowercase()
-    }
+    private fun String.normalizeUrl(): String =
+        if (startsWith("local:")) this else gitUrlKey(this).lowercase()
 }
