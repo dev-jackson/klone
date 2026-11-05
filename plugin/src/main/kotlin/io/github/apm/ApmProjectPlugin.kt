@@ -85,6 +85,7 @@ private fun DependencyHandler.addFromRegistry(
     version: String?,
     configuration: String
 ) {
+    if (KloneRegistry.resolutionSkipped) return
     val moduleNames: List<String?> = when {
         module != null -> listOf(module)
         modules != null -> modules

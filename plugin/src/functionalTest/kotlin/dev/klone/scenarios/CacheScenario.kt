@@ -60,7 +60,7 @@ class CacheScenario : Scenario() {
         val custom = File(tempDir, "custom-cache")
         val host = hostInGradleHome("""gitImplementation("${lib.url}", exact = "1")""")
         assertEquals(listOf("1"), host.runApp("-Pklone.cacheDir=${custom.absolutePath}"))
-        assertTrue(custom.walkTopDown().any { it.name == "greeter" })
+        assertTrue(custom.walkTopDown().any { it.name.startsWith("greeter-") })
         assertFalse(defaultCache.exists())
     }
 
@@ -71,7 +71,7 @@ class CacheScenario : Scenario() {
         val host = greeterHost("""gitImplementation("${lib.url}", exact = "1.0")""")
         host.runApp()
 
-        val checkout = cacheDir.walkTopDown().first { it.name == "greeter" && File(it, ".git").isDirectory }
+        val checkout = cacheDir.walkTopDown().first { it.name.startsWith("greeter-") && File(it, ".git").isDirectory }
         val source = File(checkout, "src/main/java/com/example/Greeter.java")
         source.writeText(source.readText().replace("\"1.0\"", "\"debug-edit\""))
         assertEquals(listOf("debug-edit"), host.runApp(), "edits in the cache are built while on the same version")

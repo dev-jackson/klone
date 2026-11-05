@@ -42,4 +42,13 @@ class GitDependencyTest {
         val dep = GitDependency("https://user:token@dev.azure.com/org/project/_git/repo", GitRef.Branch("main"))
         assertEquals("dev.azure.com/org/project/_git/repo", dep.cacheKey)
     }
+
+    @Test
+    fun `cacheKey for local remotes is short and unique`() {
+        val a = GitDependency("file:///very/long/path/to/some/remotes/greeter").cacheKey
+        val b = GitDependency("file:///other/place/greeter").cacheKey
+        val win = GitDependency("file:///C:/Users/runner/AppData/Local/Temp/junit-1/remotes/greeter").cacheKey
+        assertEquals(true, a.startsWith("file/greeter-") && b.startsWith("file/greeter-") && a != b)
+        assertEquals(true, win.matches(Regex("file/greeter-[0-9a-f]{8}")))
+    }
 }

@@ -120,6 +120,13 @@ fun gitUrlKey(url: String): String {
         }
         else -> "file" to trimmed
     }
+    if (host == "file") {
+        // Local remotes: the full absolute path would blow Windows' 260-char path limit inside the cache
+        val name = path.replace('\\', '/').trimEnd('/').substringAfterLast('/')
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(path.toByteArray())
+            .take(4).joinToString("") { "%02x".format(it) }
+        return "file/$name-$hash"
+    }
     val safePath = path.replace('\\', '/').trim('/').split('/')
         .joinToString("/") { segment -> segment.replace(Regex("""[<>:"|?*]"""), "_") }
     return "$host/$safePath"

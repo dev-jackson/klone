@@ -25,6 +25,10 @@ object KloneRegistry {
     @Volatile
     var rootDir: File? = null
 
+    /** True when the build only runs kloneClean: nothing was resolved and declarations are no-ops. */
+    @Volatile
+    var resolutionSkipped: Boolean = false
+
     fun register(url: String, moduleName: String?, entry: Entry) {
         entries[key(url, moduleName)] = entry
         urlToModules.getOrPut(url.normalizeUrl()) { linkedSetOf() }.add(moduleName)
@@ -40,6 +44,7 @@ object KloneRegistry {
     fun clear() {
         entries.clear()
         urlToModules.clear()
+        resolutionSkipped = false
     }
 
     fun localKey(dir: File): String = "local:${dir.canonicalPath}"

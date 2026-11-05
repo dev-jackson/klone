@@ -48,8 +48,16 @@ class KloneSettingsPlugin : Plugin<Settings> {
             return
         }
 
-        val usedBuildNames = mutableSetOf(settings.rootProject.name)
         val cacheDir = resolveCacheDir(settings, extension)
+        // `./gradlew kloneClean` must not include the builds it deletes (Windows keeps their .gradle/ open)
+        if (onlyCleaning(settings)) {
+            KloneRegistry.resolutionSkipped = true
+            KloneTasks.register(settings, gitDeps.distinct().map { dep ->
+                KloneTasks.ResolvedRepo(dep.url, dep.ref.type, dep.ref.value, dep.tagPattern, "", null, File(cacheDir, dep.cacheKey).absolutePath)
+            }.distinctBy { it.localDir }, cacheDir)
+            return
+        }
+        val usedBuildNames = mutableSetOf(settings.rootProject.name)
         val repos = resolveGit(settings, gitDeps.distinct(), usedBuildNames, cacheDir, extension.propagatedProperties)
         resolveLocal(settings, localDeps.distinct(), usedBuildNames)
         KloneTasks.register(settings, repos, cacheDir)
@@ -213,7 +221,7 @@ class KloneSettingsPlugin : Plugin<Settings> {
             names.isEmpty() -> detected.filter { it.projectPath == ":" }
             else -> names.map { name ->
                 detected.firstOrNull { matches(it, name) } ?: throw GradleException(
-                    "[Klone] Module '$name' not found in ${dir.name}. Available: ${detected.map { it.moduleName ?: "root" }}"
+                    "[Klone] Module '$name' not found in ${displayName(dir)}. Available: ${detected.map { it.moduleName ?: "root" }}"
                 )
             }
         }
@@ -238,6 +246,14 @@ class KloneSettingsPlugin : Plugin<Settings> {
     private fun uniqueName(dir: File, used: MutableSet<String>): String {
         val candidates = sequenceOf(dir.name, "${dir.parentFile?.name}-${dir.name}") + generateSequence(2) { it + 1 }.map { "${dir.name}-$it" }
         return candidates.first { used.add(it) }
+    }
+
+    /** Cache dirs of local remotes carry a hash suffix (`kit-1a2b3c4d`); show the repo name. */
+    private fun displayName(dir: File): String = dir.name.replace(Regex("-[0-9a-f]{8}$"), "")
+
+    private fun onlyCleaning(settings: Settings): Boolean {
+        val tasks = settings.startParameter.taskNames.filterNot { it.startsWith("-") }
+        return tasks.isNotEmpty() && tasks.all { it.removePrefix(":") == "kloneClean" }
     }
 
     /** `KLONE_CACHE_DIR` > `klone { cacheDir }` > `-Pklone.cacheDir` > `$GRADLE_USER_HOME/caches/klone`. */

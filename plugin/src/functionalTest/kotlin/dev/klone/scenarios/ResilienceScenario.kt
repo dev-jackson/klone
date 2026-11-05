@@ -20,7 +20,7 @@ class ResilienceScenario : Scenario() {
         val host = greeterAt(lib.url)
         assertEquals(listOf("1.0"), host.runApp())
 
-        val cached = cacheDir.walkTopDown().first { it.name == "greeter" && File(it, ".git").isDirectory }
+        val cached = cacheDir.walkTopDown().first { it.name.startsWith("greeter-") && File(it, ".git").isDirectory }
         File(cached, ".git/HEAD").delete()
         assertEquals(listOf("1.0"), host.runApp())
     }

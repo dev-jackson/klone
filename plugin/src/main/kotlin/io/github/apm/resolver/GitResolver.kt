@@ -253,7 +253,8 @@ class GitResolver(
     // ── process ─────────────────────────────────────────────────────────────
 
     private fun git(workDir: File, vararg args: String): String {
-        val command = listOf("git") + args
+        // Android repos often exceed Windows' 260-char path limit once nested in the cache
+        val command = listOf("git") + (if (isWindows) listOf("-c", "core.longpaths=true") else emptyList()) + args
         val process = try {
             ProcessBuilder(command)
                 .directory(workDir)
@@ -287,6 +288,7 @@ class GitResolver(
 
     private companion object {
         val threadLocks = ConcurrentHashMap<String, ReentrantLock>()
+        val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
     }
 }
 
