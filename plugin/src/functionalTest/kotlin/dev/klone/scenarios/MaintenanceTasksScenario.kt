@@ -49,4 +49,13 @@ class MaintenanceTasksScenario : Scenario() {
         host.build("kloneClean", "--all", "--no-watch-fs")
         assertFalse(cacheDir.exists())
     }
+
+    @Test
+    fun `kloneDoctor reports every cloned repo`() {
+        val lib = remote("greeter", Projects.javaLibrary("greeter", "1.0")).tag("1.0")
+        val host = greeterHost("""gitImplementation("${lib.url}", exact = "1.0")""")
+        val output = host.build("kloneDoctor", "-q").output
+        assertTrue(output.contains("Klone doctor — 1 cloned repo(s)"), output)
+        assertTrue(output.contains("greeter"), output)
+    }
 }

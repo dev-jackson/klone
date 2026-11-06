@@ -32,6 +32,7 @@ data class SemVer(val parts: List<Int>, val preRelease: String?) : Comparable<Se
 
         fun isRange(spec: String): Boolean {
             val s = spec.trim()
+            if (s.contains("&&")) return true
             return s.startsWith("^") || s.startsWith("~") || s.startsWith(">") || s.startsWith("<") ||
                 s.endsWith("+") || s.startsWith("[") || s.startsWith("(") || s.startsWith("latest.") || s == "*"
         }
@@ -46,6 +47,11 @@ data class SemVer(val parts: List<Int>, val preRelease: String?) : Comparable<Se
         }
 
         fun matcher(spec: String): (SemVer) -> Boolean {
+            // "A && B": every range must accept the version (requirements of several dependents)
+            if (spec.contains("&&")) {
+                val all = spec.split("&&").map { matcher(it) }
+                return { v -> all.all { it(v) } }
+            }
             val s = spec.trim()
             fun v(text: String) = parse(text) ?: throw IllegalArgumentException("Invalid version '$text' in range '$spec'")
             fun bump(base: SemVer, index: Int) =

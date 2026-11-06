@@ -3,6 +3,8 @@ package dev.klone.tasks
 import dev.klone.model.GitRef
 import dev.klone.model.SemVer
 import dev.klone.model.deleteTree
+import dev.klone.MetaspaceAdvisor
+import dev.klone.resolver.BuildDoctor
 import dev.klone.resolver.GitResolver
 import org.gradle.api.DefaultTask
 import org.gradle.api.initialization.Settings
@@ -15,7 +17,7 @@ import org.gradle.api.tasks.options.Option
 import java.io.File
 import java.util.concurrent.TimeUnit
 
-/** Maintenance tasks on the root project: kloneList, kloneOutdated, kloneClean. */
+/** Maintenance tasks on the root project: kloneList, kloneOutdated, kloneDoctor, kloneClean. */
 object KloneTasks {
 
     data class ResolvedRepo(
@@ -25,13 +27,15 @@ object KloneTasks {
         val tagPattern: String?,
         val commit: String,
         val tag: String?,
-        val localDir: String
+        val localDir: String,
+        // The build Klone includes: localDir, or its `dir` subdirectory
+        val buildDir: String = localDir
     ) {
-        fun encode() = listOf(url, refType, refValue, tagPattern.orEmpty(), commit, tag.orEmpty(), localDir).joinToString("\t")
+        fun encode() = listOf(url, refType, refValue, tagPattern.orEmpty(), commit, tag.orEmpty(), localDir, buildDir).joinToString("\t")
 
         companion object {
             fun decode(line: String) = line.split('\t').let {
-                ResolvedRepo(it[0], it[1], it[2], it[3].ifEmpty { null }, it[4], it[5].ifEmpty { null }, it[6])
+                ResolvedRepo(it[0], it[1], it[2], it[3].ifEmpty { null }, it[4], it[5].ifEmpty { null }, it[6], it.getOrElse(7) { _ -> it[6] })
             }
         }
     }
@@ -46,6 +50,10 @@ object KloneTasks {
             project.tasks.register("kloneOutdated", KloneOutdatedTask::class.java) { t ->
                 t.group = "klone"; t.description = "Shows newer tags/commits available for git dependencies."
                 t.repos.set(encoded); t.cacheDir.set(cacheDir.absolutePath)
+            }
+            project.tasks.register("kloneDoctor", KloneDoctorTask::class.java) { t ->
+                t.group = "klone"; t.description = "Reports what makes cloned repos costly to build (plugin classpaths, own build logic, hygiene)."
+                t.repos.set(encoded); t.hostDir.set(settings.rootDir.absolutePath)
             }
             project.tasks.register("kloneClean", KloneCleanTask::class.java) { t ->
                 t.group = "klone"; t.description = "Deletes cached checkouts of this build's git dependencies (--all, --unused-days=N)."
@@ -108,6 +116,22 @@ abstract class KloneOutdatedTask : DefaultTask() {
             line?.let { logger.lifecycle(it) }
         }
         logger.lifecycle(if (outdated == 0) "All git dependencies are up to date." else "$outdated git dependenc${if (outdated == 1) "y" else "ies"} can be updated.")
+    }
+}
+
+abstract class KloneDoctorTask : DefaultTask() {
+    @get:Input abstract val repos: ListProperty<String>
+    @get:Input abstract val hostDir: Property<String>
+
+    init { outputs.upToDateWhen { false } }
+
+    @TaskAction
+    fun diagnose() {
+        val all = repos.get().map { KloneTasks.ResolvedRepo.decode(it) }
+        if (all.isEmpty()) { logger.quiet("No git dependencies."); return }
+        val host = BuildDoctor.analyze(File(hostDir.get()), "host")
+        val reports = all.map { r -> BuildDoctor.analyze(File(r.buildDir), File(r.localDir).name.replace(Regex("-[0-9a-f]{8}$"), "")) }
+        logger.quiet(BuildDoctor.render(host, reports, MetaspaceAdvisor.current()))
     }
 }
 

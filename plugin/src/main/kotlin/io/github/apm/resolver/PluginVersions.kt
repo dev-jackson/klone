@@ -1,5 +1,6 @@
 package dev.klone.resolver
 
+import dev.klone.composite.HostPropagation
 import org.gradle.api.logging.Logger
 import org.tomlj.Toml
 import org.tomlj.TomlTable
@@ -61,7 +62,11 @@ object PluginVersions {
         }
 
     fun warnIfIncompatible(host: Map<String, String>, libraryDir: File, url: String, logger: Logger) {
-        val problems = incompatibilities(host, detect(libraryDir))
+        val library = detect(libraryDir)
+        if (HostPropagation.alignAndroidPlugin(libraryDir, host[AGP], library[AGP])) {
+            logger.lifecycle("[Klone] $url: Android Gradle Plugin ${library[AGP]} aligned to the host's ${host[AGP]}")
+        }
+        val problems = incompatibilities(host, library)
         if (problems.isEmpty()) return
         logger.warn(
             "[Klone] $url declares ${problems.joinToString(" and ")}.\n" +

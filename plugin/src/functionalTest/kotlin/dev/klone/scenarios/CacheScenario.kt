@@ -83,4 +83,13 @@ class CacheScenario : Scenario() {
         val stash = ProcessBuilder("git", "stash", "show", "-p").directory(checkout).start().inputStream.bufferedReader().readText()
         assertTrue(stash.contains("debug-edit"), stash)
     }
+
+    @Test
+    fun `relative cache dir is relative to where Gradle runs, not to the daemon`() {
+        val lib = remote("greeter", Projects.javaLibrary("greeter", "main-1"))
+        val host = host(files = Projects.host(dependencies = """gitImplementation("${lib.url}", branch = "main")""",
+            prints = listOf("Greeter.version()"), imports = listOf("com.example.Greeter")), cacheDir = null)
+        assertEquals(listOf("main-1"), host.runApp("-Pklone.cacheDir=../rel-cache"))
+        assertTrue(File(tempDir, "rel-cache/file").isDirectory)
+    }
 }

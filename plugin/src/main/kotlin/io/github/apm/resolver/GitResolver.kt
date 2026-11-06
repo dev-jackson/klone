@@ -47,6 +47,12 @@ class GitResolver(
     fun resolve(dep: GitDependency, lockedCommit: String? = null, lockedTag: String? = null): ResolvedDependency {
         val localDir = File(cacheDir, dep.cacheKey)
         return withCacheLock(localDir) {
+            // Fast path, every build after the first: the checkout already is the locked commit.
+            // Reading .git/HEAD avoids spawning git (~20 ms per process, several per repo).
+            if (lockedCommit != null && !refresh && checkedOutCommit(localDir) == lockedCommit && submodulesReady(localDir)) {
+                markUsed(localDir)
+                return@withCacheLock ResolvedDependency(localDir, lockedCommit, lockedTag)
+            }
             if (!isValidRepo(localDir)) {
                 if (localDir.exists()) {
                     logger.warn("[Klone] Cache at ${localDir.absolutePath} is corrupt — re-cloning")
@@ -70,7 +76,7 @@ class GitResolver(
                 git(localDir, "clean", "-fdq")
             }
             updateSubmodules(localDir, dep.url)
-            File(localDir, ".git/klone-last-used").writeText(System.currentTimeMillis().toString())
+            markUsed(localDir)
             ResolvedDependency(localDir, commit, tag)
         }
     }
@@ -211,7 +217,14 @@ class GitResolver(
         if (offline) return
         // Local (file://) submodules are blocked by default since git 2.38; allow them for local remotes only
         val allowFile = if (url.startsWith("file://") || url.startsWith("/")) listOf("-c", "protocol.file.allow=always") else emptyList()
-        git(dir, *(allowFile + listOf("submodule", "update", "--init", "--recursive", "--depth", "1")).toTypedArray())
+        try {
+            git(dir, *(allowFile + listOf("submodule", "update", "--init", "--recursive", "--depth", "1")).toTypedArray())
+        } catch (e: KloneGitException) {
+            // Submodules are often test fixtures (or use dead git:// URLs); the build may not need them
+            logger.warn("[Klone] Could not update submodules of $url — continuing without them: ${e.message?.lineSequence()?.lastOrNull { it.isNotBlank() }}")
+        }
+        // Tried for this commit: later builds take the fast path instead of retrying (network) every time
+        checkedOutCommit(dir)?.let { File(dir, ".git/klone-submodules").writeText(it) }
     }
 
     // ── repository setup ────────────────────────────────────────────────────
@@ -228,6 +241,19 @@ class GitResolver(
         } finally {
             tmp.deleteTree()
         }
+    }
+
+    /** Commit of a detached HEAD, read from disk (Klone always checks out detached). */
+    private fun checkedOutCommit(dir: File): String? =
+        runCatching { File(dir, ".git/HEAD").readText().trim() }.getOrNull()?.takeIf { SHA.matches(it) }
+
+    private fun submodulesReady(dir: File): Boolean =
+        !File(dir, ".gitmodules").exists() ||
+            runCatching { File(dir, ".git/klone-submodules").readText() }.getOrNull() == checkedOutCommit(dir)
+
+    /** Read by `kloneClean --unused-days`. */
+    private fun markUsed(dir: File) {
+        File(dir, ".git/klone-last-used").writeText(System.currentTimeMillis().toString())
     }
 
     private fun isValidRepo(dir: File): Boolean =
@@ -288,6 +314,7 @@ class GitResolver(
 
     private companion object {
         val threadLocks = ConcurrentHashMap<String, ReentrantLock>()
+        val SHA = Regex("[0-9a-f]{40}")
         val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
     }
 }

@@ -43,6 +43,18 @@ object ModuleDetector {
         return if (modules.any { it.first }) modules.filter { it.first }.map { it.second } else modules.map { it.second }
     }
 
+    /** Every project the settings file includes (and their implicit parents), with its directory. */
+    internal fun allProjects(repoDir: File): Map<String, File> {
+        val settings = readSettings(repoDir) ?: return emptyMap()
+        val projectDirs = parseProjectDirs(settings)
+        val paths = parseSettingsIncludes(settings).flatMap { path ->
+            // ":a:b" also creates ":a"
+            val segments = path.removePrefix(":").split(':')
+            (1..segments.size).map { ":" + segments.take(it).joinToString(":") }
+        }.distinct()
+        return paths.associateWith { path -> projectDirs[path]?.let { File(repoDir, it) } ?: projectPathToDir(repoDir, path) }
+    }
+
     /** Artifact id a module publishes under, when it says so explicitly. */
     private fun publishedArtifactId(dir: File): String? {
         File(dir, "gradle.properties").takeIf { it.isFile }?.let { props ->

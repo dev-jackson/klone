@@ -44,7 +44,8 @@ fun DependencyHandler.localImplementation(
     modules: List<String>? = null,
     configuration: String = "implementation"
 ) {
-    val dir = KloneRegistry.resolveLocalDir(path, KloneRegistry.rootDir ?: File(path).absoluteFile.parentFile)
+    val root = KloneRegistry.scopeOf(this)?.rootDir ?: File(path).absoluteFile.parentFile
+    val dir = KloneRegistry.resolveLocalDir(path, root)
     addFromRegistry(KloneRegistry.localKey(dir), path, module, modules, version = null, configuration)
 }
 
@@ -85,15 +86,16 @@ private fun DependencyHandler.addFromRegistry(
     version: String?,
     configuration: String
 ) {
-    if (KloneRegistry.resolutionSkipped) return
+    val scope = KloneRegistry.scopeOf(this)
+    if (scope?.resolutionSkipped == true) return
     val moduleNames: List<String?> = when {
         module != null -> listOf(module)
         modules != null -> modules
-        else -> KloneRegistry.allModulesFor(key).ifEmpty { listOf(null) }
+        else -> scope?.allModulesFor(key).orEmpty().ifEmpty { listOf(null) }
     }
 
     for (modName in moduleNames) {
-        val coords = KloneRegistry.find(key, modName)?.moduleCoordinates ?: throw GradleException(
+        val coords = scope?.find(key, modName)?.moduleCoordinates ?: throw GradleException(
             "[Klone] $label#${modName ?: "root"} was not resolved in the settings phase.\n" +
                 "- Apply id(\"io.github.dev-jackson.klone\") in settings.gradle.kts\n" +
                 "- Use string literals or libs.versions.* (variables can't be read before configuration)\n" +
