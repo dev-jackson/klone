@@ -53,7 +53,7 @@ class ResilienceScenario : Scenario() {
             gitImplementation("${lib.url}.git", branch = "main")
         """)
         val output = host.buildAndFail("help").output
-        assertTrue(output.contains("is declared with different refs"), output)
+        assertTrue(output.contains("is required with incompatible refs"), output)
     }
 
     @Test

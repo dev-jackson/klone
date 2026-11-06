@@ -13,14 +13,16 @@ class KloneRegistryTest {
     @TempDir
     lateinit var tempDir: File
 
+    private lateinit var scope: KloneRegistry.Scope
+
     @BeforeEach
     fun setUp() {
-        KloneRegistry.clear()
+        scope = KloneRegistry.reset(tempDir)
     }
 
     @Test
     fun `find returns null for unknown url`() {
-        assertNull(KloneRegistry.find("https://github.com/unknown/repo"))
+        assertNull(scope.find("https://github.com/unknown/repo"))
     }
 
     @Test
@@ -30,9 +32,9 @@ class KloneRegistryTest {
             moduleCoordinates = "com.squareup.retrofit2:retrofit",
             localDir = tempDir
         )
-        KloneRegistry.register("https://github.com/square/retrofit", null, entry)
+        scope.register("https://github.com/square/retrofit", null, entry)
 
-        val found = KloneRegistry.find("https://github.com/square/retrofit", null)
+        val found = scope.find("https://github.com/square/retrofit", null)
         assertEquals(entry, found)
     }
 
@@ -43,13 +45,13 @@ class KloneRegistryTest {
             moduleCoordinates = "com.squareup.retrofit2:converter-gson",
             localDir = tempDir
         )
-        KloneRegistry.register("https://github.com/square/retrofit", "converter-gson", entry)
+        scope.register("https://github.com/square/retrofit", "converter-gson", entry)
 
-        val found = KloneRegistry.find("https://github.com/square/retrofit", "converter-gson")
+        val found = scope.find("https://github.com/square/retrofit", "converter-gson")
         assertEquals(entry, found)
 
         // Root module not registered
-        assertNull(KloneRegistry.find("https://github.com/square/retrofit", null))
+        assertNull(scope.find("https://github.com/square/retrofit", null))
     }
 
     @Test
@@ -59,11 +61,11 @@ class KloneRegistryTest {
             moduleCoordinates = "com.squareup.retrofit2:retrofit",
             localDir = tempDir
         )
-        KloneRegistry.register("https://github.com/square/retrofit.git/", null, entry)
+        scope.register("https://github.com/square/retrofit.git/", null, entry)
 
         // Both normalized and non-normalized URLs resolve to the same entry
-        assertEquals(entry, KloneRegistry.find("https://github.com/square/retrofit.git/"))
-        assertEquals(entry, KloneRegistry.find("https://github.com/square/retrofit"))
+        assertEquals(entry, scope.find("https://github.com/square/retrofit.git/"))
+        assertEquals(entry, scope.find("https://github.com/square/retrofit"))
     }
 
     @Test
@@ -71,11 +73,11 @@ class KloneRegistryTest {
         val url = "https://github.com/square/retrofit"
         val mkEntry = { coords: String -> KloneRegistry.Entry(url, coords, tempDir) }
 
-        KloneRegistry.register(url, null, mkEntry("com.squareup.retrofit2:retrofit"))
-        KloneRegistry.register(url, "converter-gson", mkEntry("com.squareup.retrofit2:converter-gson"))
-        KloneRegistry.register(url, "adapter-rxjava2", mkEntry("com.squareup.retrofit2:adapter-rxjava2"))
+        scope.register(url, null, mkEntry("com.squareup.retrofit2:retrofit"))
+        scope.register(url, "converter-gson", mkEntry("com.squareup.retrofit2:converter-gson"))
+        scope.register(url, "adapter-rxjava2", mkEntry("com.squareup.retrofit2:adapter-rxjava2"))
 
-        val modules = KloneRegistry.allModulesFor(url)
+        val modules = scope.allModulesFor(url)
         assertEquals(3, modules.size)
         assertTrue(null in modules)
         assertTrue("converter-gson" in modules)
@@ -84,7 +86,7 @@ class KloneRegistryTest {
 
     @Test
     fun `allModulesFor returns empty list for unknown url`() {
-        assertTrue(KloneRegistry.allModulesFor("https://github.com/unknown/repo").isEmpty())
+        assertTrue(scope.allModulesFor("https://github.com/unknown/repo").isEmpty())
     }
 
     @Test
@@ -94,9 +96,9 @@ class KloneRegistryTest {
             moduleCoordinates = "com.example:mylib",
             localDir = tempDir
         )
-        KloneRegistry.register("local:/some/path/to/lib", null, entry)
+        scope.register("local:/some/path/to/lib", null, entry)
 
-        val found = KloneRegistry.find("local:/some/path/to/lib", null)
+        val found = scope.find("local:/some/path/to/lib", null)
         assertEquals(entry, found)
     }
 
@@ -107,10 +109,10 @@ class KloneRegistryTest {
             moduleCoordinates = "com.example:lib",
             localDir = tempDir
         )
-        KloneRegistry.register("local:/some/path", null, entry)
+        scope.register("local:/some/path", null, entry)
 
         // Same key retrieves it — proves no normalization happened
-        assertEquals(entry, KloneRegistry.find("local:/some/path", null))
+        assertEquals(entry, scope.find("local:/some/path", null))
     }
 
     @Test
@@ -118,10 +120,10 @@ class KloneRegistryTest {
         val key = "local:/libs/mylib"
         val mkEntry = { coords: String -> KloneRegistry.Entry(key, coords, tempDir) }
 
-        KloneRegistry.register(key, null, mkEntry("com.example:mylib"))
-        KloneRegistry.register(key, "sub1", mkEntry("com.example:sub1"))
+        scope.register(key, null, mkEntry("com.example:mylib"))
+        scope.register(key, "sub1", mkEntry("com.example:sub1"))
 
-        val modules = KloneRegistry.allModulesFor(key)
+        val modules = scope.allModulesFor(key)
         assertEquals(2, modules.size)
         assertTrue(null in modules)
         assertTrue("sub1" in modules)

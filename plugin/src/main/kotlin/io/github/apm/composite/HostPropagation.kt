@@ -22,6 +22,12 @@ internal object HostPropagation {
     private const val PROPS_END = "# </klone-injected>"
     private const val REPOS_START = "// <klone-repos>"
     private const val REPOS_END = "// </klone-repos>"
+    private const val ALIGN_START = "// <klone-align>"
+    private const val ALIGN_END = "// </klone-align>"
+    private const val COMPAT_START = "# <klone-agp-compat>"
+    private const val COMPAT_END = "# </klone-agp-compat>"
+    private const val ROOT_NAME_START = "// <klone-root-name>"
+    private const val ROOT_NAME_END = "// </klone-root-name>"
 
     private val PUBLIC_REPOS = listOf(
         "https://dl.google.com/dl/android/maven2",
@@ -44,6 +50,7 @@ internal object HostPropagation {
             .flatMap { listOf("${it.name}Username", "${it.name}Password") }
         injectGradleProperties(localDir, settings.rootDir, allowedProperties + referenced)
         injectHostRepositories(localDir, settings)
+        fixRootProjectName(localDir)
     }
 
     fun injectSdkDir(localDir: File, hostRootDir: File) {
@@ -144,6 +151,118 @@ internal object HostPropagation {
         if (writeIfChanged(clonedSettingsFile, upsertBlock(content, REPOS_START, REPOS_END, block))) {
             logger.lifecycle("[Klone] Propagated ${repos.size} private Maven repo(s) into ${localDir.name}/${clonedSettingsFile.name}")
         }
+    }
+
+    /**
+     * AGP refuses two versions in one build, even patch releases apart ("Using multiple versions of the
+     * Android Gradle plugin(9.0.0, 9.0.1) in the same build is not allowed"). Pins the cloned build, and
+     * the builds it includes (build-logic), to the host's version. Returns true when the clone declared another one.
+     */
+    fun alignAndroidPlugin(localDir: File, hostVersion: String?, libraryVersion: String?): Boolean {
+        val align = hostVersion != null && libraryVersion != null && hostVersion != libraryVersion
+        for (file in settingsFilesOf(localDir)) {
+            val content = file.readText()
+            val updated = if (align) {
+                upsertBlock(content, ALIGN_START, ALIGN_END, alignBlock(hostVersion!!, file.name.endsWith(".kts")))
+            } else {
+                removeBlock(content, ALIGN_START, ALIGN_END)
+            }
+            writeIfChanged(file, updated)
+        }
+        injectAgpCompat(localDir, if (align && major(libraryVersion!!) < major(hostVersion!!)) hostVersion else null)
+        return align
+    }
+
+    /**
+     * A clone written for AGP 8 lifted to AGP 9 keeps AGP 8 behavior through AGP 9's opt-outs: built-in Kotlin
+     * clashes with the Kotlin plugins those builds apply ("Cannot add extension with name 'kotlin'").
+     * Keys the clone sets itself win.
+     */
+    private fun injectAgpCompat(localDir: File, hostVersion: String?) {
+        val file = File(localDir, "gradle.properties")
+        val content = if (file.exists()) file.readText() else ""
+        val own = removeBlock(content, COMPAT_START, COMPAT_END)
+        val ownKeys = Properties().also { if (own.isNotBlank()) it.load(own.reader()) }.stringPropertyNames()
+        val flags = if (hostVersion != null && major(hostVersion) >= 9) AGP9_COMPAT.filterKeys { it !in ownKeys } else emptyMap()
+        if (flags.isEmpty()) {
+            if (file.exists()) writeIfChanged(file, own)
+            return
+        }
+        val block = "$COMPAT_START\n" + flags.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n$COMPAT_END"
+        writeIfChanged(file, upsertBlock(content, COMPAT_START, COMPAT_END, block))
+    }
+
+    private val AGP9_COMPAT = mapOf("android.builtInKotlin" to "false", "android.newDsl" to "false")
+
+    private fun major(version: String) = version.substringBefore('.').toIntOrNull() ?: 0
+
+    /** The build's settings file plus those of builds it includes (`includeBuild("build-logic")`). */
+    private fun settingsFilesOf(dir: File): List<File> {
+        fun settingsIn(d: File) = listOf("settings.gradle.kts", "settings.gradle").map { File(d, it) }.firstOrNull { it.isFile }
+        val root = settingsIn(dir) ?: return emptyList()
+        val included = dev.klone.resolver.ScriptParser.findCalls(dev.klone.resolver.ScriptParser.stripComments(root.readText()), setOf("includeBuild"))
+            .mapNotNull { call -> call.args.firstOrNull()?.let { dev.klone.resolver.ScriptParser.stringLiteral(it.expr) } }
+            .mapNotNull { path -> settingsIn(File(dir, path).normalize()) }
+        return (listOf(root) + included).distinct()
+    }
+
+    private fun alignBlock(version: String, kotlinDsl: Boolean): String {
+        val v = escapeString(version)
+        val body = if (kotlinDsl) """
+            settings.pluginManagement.resolutionStrategy.eachPlugin {
+                if (requested.id.id.startsWith("com.android.")) useVersion("$v")
+            }
+            gradle.beforeProject {
+                val align = Action<Configuration> {
+                    resolutionStrategy.eachDependency {
+                        if (requested.group == "com.android.tools.build" && requested.name == "gradle") useVersion("$v")
+                    }
+                }
+                buildscript.configurations.configureEach(align)
+                configurations.configureEach(align)
+            }
+        """ else """
+            settings.pluginManagement.resolutionStrategy.eachPlugin {
+                if (requested.id.id.startsWith('com.android.')) useVersion('$v')
+            }
+            gradle.beforeProject { p ->
+                def align = { c ->
+                    c.resolutionStrategy.eachDependency {
+                        if (requested.group == 'com.android.tools.build' && requested.name == 'gradle') useVersion('$v')
+                    }
+                }
+                p.buildscript.configurations.configureEach(align)
+                p.configurations.configureEach(align)
+            }
+        """
+        return "$ALIGN_START\n// Klone: AGP aligned with the host build (one AGP version per composite build)\n${body.trimIndent()}\n$ALIGN_END"
+    }
+
+    /**
+     * When the root project (its `rootProject.name`, or the directory name without one) is named like a
+     * subproject (Balloon and `:balloon`, compose-effects and `:compose-effects`), type-safe project
+     * accessors, which the host's feature preview turns on for the whole composite, generate the same
+     * getter twice and the build fails. The root is renamed `<name>-root` (a later assignment wins).
+     */
+    fun fixRootProjectName(localDir: File) {
+        val file = listOf("settings.gradle.kts", "settings.gradle").map { File(localDir, it) }.firstOrNull { it.isFile } ?: return
+        val content = file.readText()
+        val own = removeBlock(content, ROOT_NAME_START, ROOT_NAME_END)
+        fun key(name: String) = name.lowercase().filter { it.isLetterOrDigit() }
+        val source = dev.klone.resolver.ScriptParser.stripComments(own)
+        // Declared name (`rootProject.name = "compose-effects"`) or, without one, the directory name
+        val declared = Regex("""rootProject\.name\s*=\s*(.+)""").find(source)?.groupValues?.get(1)?.trim()
+        val rootName = if (declared == null) localDir.name else dev.klone.resolver.ScriptParser.stringLiteral(declared)
+        val clashes = rootName != null &&
+            dev.klone.resolver.ScriptParser.findCalls(source, setOf("include"))
+                .flatMap { call -> call.args.mapNotNull { dev.klone.resolver.ScriptParser.stringLiteral(it.expr) } }
+                .any { key(it.substringAfterLast(':')) == key(rootName!!) }
+        val updated = if (clashes) {
+            val quote = if (file.name.endsWith(".kts")) "\"" else "'"
+            upsertBlock(content, ROOT_NAME_START, ROOT_NAME_END,
+                "$ROOT_NAME_START\nrootProject.name = $quote${escapeString(rootName!!)}-root$quote\n$ROOT_NAME_END")
+        } else own
+        writeIfChanged(file, updated)
     }
 
     fun writeSettingsSentinel(file: File, sentinelBlock: String) {
